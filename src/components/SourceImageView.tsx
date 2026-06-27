@@ -1,7 +1,7 @@
 import type React from "react";
-import { Maximize2, Minus, Plus } from "lucide-react";
+import { Eraser, Maximize2, Minus, Plus } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import type { ControlPoint, MapLayer } from "../types/project";
+import type { BackgroundRemovalSettings, ControlPoint, MapLayer } from "../types/project";
 import { filePathToUrl, layerDisplayImage } from "../utils/leafletHelpers";
 
 type SourceImageViewProps = {
@@ -9,8 +9,10 @@ type SourceImageViewProps = {
   layer?: MapLayer;
   selectedLayerId: string | null;
   draftPoint?: ControlPoint["sourcePixel"];
+  busy: boolean;
   onSelectLayer(layerId: string): void;
   onPickSource(point: ControlPoint["sourcePixel"]): void;
+  onRemoveBackground(layerId: string, settings: BackgroundRemovalSettings): void;
 };
 
 type Point = {
@@ -26,12 +28,24 @@ type Size = {
 const maxZoom = 8;
 const minZoomFloor = 0.02;
 
-export function SourceImageView({ layers, layer, selectedLayerId, draftPoint, onSelectLayer, onPickSource }: SourceImageViewProps) {
+export function SourceImageView({
+  layers,
+  layer,
+  selectedLayerId,
+  draftPoint,
+  busy,
+  onSelectLayer,
+  onPickSource,
+  onRemoveBackground,
+}: SourceImageViewProps) {
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState<Point>({ x: 0, y: 0 });
   const [naturalSize, setNaturalSize] = useState<Size>({ width: 0, height: 0 });
   const [viewportSize, setViewportSize] = useState<Size>({ width: 0, height: 0 });
   const [isPanning, setIsPanning] = useState(false);
+  const [removeBackgroundEnabled, setRemoveBackgroundEnabled] = useState(false);
+  const [backgroundColor, setBackgroundColor] = useState("#000000");
+  const [backgroundTolerance, setBackgroundTolerance] = useState(16);
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const panRef = useRef({
     active: false,
@@ -218,6 +232,12 @@ export function SourceImageView({ layers, layer, selectedLayerId, draftPoint, on
   }, [imageUrl]);
 
   useEffect(() => {
+    setRemoveBackgroundEnabled(layer?.backgroundRemoval?.enabled ?? false);
+    setBackgroundColor(layer?.backgroundRemoval?.color ?? "#000000");
+    setBackgroundTolerance(layer?.backgroundRemoval?.tolerance ?? 16);
+  }, [layer?.id, layer?.backgroundRemoval?.enabled, layer?.backgroundRemoval?.color, layer?.backgroundRemoval?.tolerance]);
+
+  useEffect(() => {
     const wrap = wrapRef.current;
     if (!wrap) {
       return;
@@ -281,6 +301,44 @@ export function SourceImageView({ layers, layer, selectedLayerId, draftPoint, on
           </button>
           <strong>{Math.round(zoom * 100)}%</strong>
         </div>
+      </div>
+      <div className="background-removal-controls">
+        <label className="background-removal-check">
+          <input type="checkbox" checked={removeBackgroundEnabled} onChange={(event) => setRemoveBackgroundEnabled(event.target.checked)} disabled={busy} />
+          <span>Supprimer le fond par couleur</span>
+        </label>
+        <label>
+          <span>Couleur</span>
+          <input type="color" value={backgroundColor} onChange={(event) => setBackgroundColor(event.target.value)} disabled={busy || !removeBackgroundEnabled} />
+        </label>
+        <label className="background-tolerance">
+          <span>Tolerance</span>
+          <input
+            type="range"
+            min="0"
+            max="96"
+            step="1"
+            value={backgroundTolerance}
+            onChange={(event) => setBackgroundTolerance(Number(event.target.value))}
+            disabled={busy || !removeBackgroundEnabled}
+          />
+          <strong>{backgroundTolerance}</strong>
+        </label>
+        <button
+          type="button"
+          onClick={() =>
+            onRemoveBackground(layer.id, {
+              enabled: removeBackgroundEnabled,
+              color: backgroundColor,
+              tolerance: backgroundTolerance,
+            })
+          }
+          disabled={busy || !removeBackgroundEnabled}
+          title="Generer une source PNG transparente"
+        >
+          <Eraser size={16} aria-hidden="true" />
+          Appliquer
+        </button>
       </div>
       <div
         className={`source-image-wrap ${isPanning ? "is-panning" : ""}`}

@@ -1,11 +1,14 @@
 import L from "leaflet";
-import { useEffect, useRef } from "react";
-import type { BaseMapConfig, ControlPoint, ExportMapArea, MapLayer, PointLayer } from "../types/project";
+import { X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type React from "react";
+import type { BaseMapConfig, ControlPoint, ExportMapArea, ImportedPoint, InfoPoint, MapLayer, PointLayer } from "../types/project";
 import { controlPointBounds } from "../utils/leafletHelpers";
 
 type MapViewProps = {
   layers: MapLayer[];
   pointLayers: PointLayer[];
+  infoPoints: InfoPoint[];
   baseMap: BaseMapConfig;
   baseMapOpacity: number;
   selectedLayerId: string | null;
@@ -14,13 +17,25 @@ type MapViewProps = {
   focusPointLayerRequest: { pointLayerId: string; nonce: number } | null;
   exportSelectionEnabled: boolean;
   onPickTarget(point: ControlPoint["targetLatLng"]): void;
+  onPointExportChange(pointLayerId: string, pointId: string, exportEnabled: boolean): void;
   onExportAreaChange(area: ExportMapArea | null): void;
   onExportViewportChange(area: ExportMapArea | null): void;
 };
 
+type PointInfoState = {
+  pointLayerId: string;
+  pointId: string;
+  x: number;
+  y: number;
+};
+
+const pointInfoWidth = 360;
+const pointInfoHeight = 340;
+
 export function MapView({
   layers,
   pointLayers,
+  infoPoints,
   baseMap,
   baseMapOpacity,
   selectedLayerId,
@@ -29,20 +44,39 @@ export function MapView({
   focusPointLayerRequest,
   exportSelectionEnabled,
   onPickTarget,
+  onPointExportChange,
   onExportAreaChange,
   onExportViewportChange,
 }: MapViewProps) {
+  const [pointInfo, setPointInfo] = useState<PointInfoState | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
   const baseLayerRef = useRef<L.TileLayer | null>(null);
   const overlaysRef = useRef<Map<string, L.TileLayer>>(new Map());
   const imageOverlaysRef = useRef<Map<string, L.ImageOverlay>>(new Map());
   const pointLayersRef = useRef<Map<string, L.LayerGroup>>(new Map());
+  const infoPointsRef = useRef<L.LayerGroup | null>(null);
   const markersRef = useRef<L.LayerGroup | null>(null);
   const exportSelectionEnabledRef = useRef(exportSelectionEnabled);
   const selectionStartRef = useRef<L.LatLng | null>(null);
   const selectionRectangleRef = useRef<L.Rectangle | null>(null);
   const onPickTargetRef = useRef(onPickTarget);
+  const pointInfoDragRef = useRef({
+    active: false,
+    startX: 0,
+    startY: 0,
+    originX: 0,
+    originY: 0,
+  });
+  const pointInfoData = useMemo(() => {
+    if (!pointInfo) {
+      return null;
+    }
+
+    const pointLayer = pointLayers.find((candidate) => candidate.id === pointInfo.pointLayerId);
+    const point = pointLayer?.points.find((candidate) => candidate.id === pointInfo.pointId);
+    return pointLayer && point ? { pointLayer, point } : null;
+  }, [pointInfo, pointLayers]);
 
   useEffect(() => {
     onPickTargetRef.current = onPickTarget;
@@ -51,6 +85,54 @@ export function MapView({
   useEffect(() => {
     exportSelectionEnabledRef.current = exportSelectionEnabled;
   }, [exportSelectionEnabled]);
+
+  function clampPointInfoPosition(x: number, y: number) {
+    const width = containerRef.current?.clientWidth ?? 420;
+    const height = containerRef.current?.clientHeight ?? 420;
+    return {
+      x: Math.min(Math.max(x, 12), Math.max(12, width - pointInfoWidth - 12)),
+      y: Math.min(Math.max(y, 56), Math.max(56, height - pointInfoHeight - 12)),
+    };
+  }
+
+  function startPointInfoDrag(event: React.MouseEvent<HTMLElement>) {
+    if (!pointInfo) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    pointInfoDragRef.current = {
+      active: true,
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: pointInfo.x,
+      originY: pointInfo.y,
+    };
+  }
+
+  useEffect(() => {
+    function handleMouseMove(event: MouseEvent) {
+      const drag = pointInfoDragRef.current;
+      if (!drag.active) {
+        return;
+      }
+
+      const nextPosition = clampPointInfoPosition(drag.originX + event.clientX - drag.startX, drag.originY + event.clientY - drag.startY);
+      setPointInfo((current) => (current ? { ...current, ...nextPosition } : current));
+    }
+
+    function handleMouseUp() {
+      pointInfoDragRef.current.active = false;
+    }
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, []);
 
   function areaFromBounds(bounds: L.LatLngBounds, mode: ExportMapArea["mode"]): ExportMapArea | null {
     const map = mapRef.current;
@@ -123,7 +205,9 @@ export function MapView({
     });
 
     markersRef.current = L.layerGroup().addTo(map);
+    infoPointsRef.current = L.layerGroup().addTo(map);
     map.on("click", (event: L.LeafletMouseEvent) => {
+      setPointInfo(null);
       if (exportSelectionEnabledRef.current) {
         return;
       }
@@ -144,6 +228,7 @@ export function MapView({
       overlaysRef.current.clear();
       imageOverlaysRef.current.clear();
       pointLayersRef.current.clear();
+      infoPointsRef.current = null;
       markersRef.current = null;
     };
   }, []);
@@ -388,6 +473,26 @@ export function MapView({
   }, [layers, selectedLayerId, draftPoint]);
 
   useEffect(() => {
+    const group = infoPointsRef.current;
+    if (!group) {
+      return;
+    }
+
+    group.clearLayers();
+    infoPoints.forEach((point) => {
+      L.circleMarker([point.targetLatLng.lat, point.targetLatLng.lng], {
+        radius: 6,
+        color: point.exportEnabled === false ? "#64748b" : "#16a34a",
+        weight: 2,
+        fillColor: "#ffffff",
+        fillOpacity: 0.96,
+      })
+        .bindTooltip(point.name, { direction: "top", offset: [0, -6] })
+        .addTo(group);
+    });
+  }, [infoPoints]);
+
+  useEffect(() => {
     const map = mapRef.current;
     if (!map) {
       return;
@@ -410,9 +515,10 @@ export function MapView({
 
       group.clearLayers();
       pointLayer.points.forEach((point) => {
+        const isExported = point.exportEnabled !== false;
         const marker = L.circleMarker([point.targetLatLng.lat, point.targetLatLng.lng], {
           radius: 6,
-          color: pointLayer.color,
+          color: isExported ? "#dc2626" : "#2563eb",
           weight: 2,
           fillColor: "#ffffff",
           fillOpacity: 0.96,
@@ -423,6 +529,15 @@ export function MapView({
           offset: pointLayer.showLabels ? [8, 0] : [0, -6],
           permanent: pointLayer.showLabels,
           className: pointLayer.showLabels ? "point-label" : undefined,
+        });
+        marker.on("contextmenu", (event: L.LeafletMouseEvent) => {
+          L.DomEvent.stop(event.originalEvent);
+          event.originalEvent.preventDefault();
+          setPointInfo({
+            pointLayerId: pointLayer.id,
+            pointId: point.id,
+            ...clampPointInfoPosition(event.containerPoint.x + 12, event.containerPoint.y + 12),
+          });
         });
         marker.addTo(group);
       });
@@ -475,6 +590,28 @@ export function MapView({
     map.fitBounds(bounds, { maxZoom: 17, padding: [40, 40] });
   }, [focusPointLayerRequest, pointLayers]);
 
+  function renderPointPropertyRows(point: ImportedPoint) {
+    const entries = Object.entries(point.properties).filter(([, value]) => String(value ?? "").trim() !== "");
+    if (entries.length === 0) {
+      return <p className="muted compact">Aucune colonne CSV renseignee.</p>;
+    }
+
+    return (
+      <dl>
+        {entries.map(([key, value]) => (
+          <div className="point-info-row" key={key}>
+            <dt>{key}</dt>
+            <dd>{value}</dd>
+          </div>
+        ))}
+      </dl>
+    );
+  }
+
+  function googleMapsUrl(point: ImportedPoint) {
+    return `https://www.google.com/maps/search/?api=1&query=${point.targetLatLng.lat},${point.targetLatLng.lng}`;
+  }
+
   return (
     <div className="map-view">
       <div className="pane-header map-header">
@@ -482,6 +619,43 @@ export function MapView({
         <span>{exportSelectionEnabled ? "Glissez pour definir la zone PDF" : `Opacite ${Math.round(baseMapOpacity * 100)}%`}</span>
       </div>
       <div className="leaflet-host" ref={containerRef} />
+      {pointInfo && pointInfoData ? (
+        <aside
+          className="point-info-popover"
+          style={{
+            left: `${pointInfo.x}px`,
+            top: `${pointInfo.y}px`,
+          }}
+        >
+          <div className="point-info-header" onMouseDown={startPointInfoDrag}>
+            <div>
+              <strong>{pointInfoData.point.name}</strong>
+              <span>{pointInfoData.pointLayer.name}</span>
+            </div>
+            <button type="button" className="icon-button" onMouseDown={(event) => event.stopPropagation()} onClick={() => setPointInfo(null)} title="Fermer">
+              <X size={16} aria-label="Fermer" />
+            </button>
+          </div>
+          <label className="point-info-export">
+            <input
+              type="checkbox"
+              checked={pointInfoData.point.exportEnabled !== false}
+              onChange={(event) => onPointExportChange(pointInfo.pointLayerId, pointInfo.pointId, event.target.checked)}
+            />
+            <span>Mettre a l'export PDF</span>
+          </label>
+          <div className="point-info-coordinates">
+            <span>{pointInfoData.point.sourceProjection}</span>
+            <span>
+              {pointInfoData.point.targetLatLng.lat.toFixed(7)}, {pointInfoData.point.targetLatLng.lng.toFixed(7)}
+            </span>
+          </div>
+          <a className="point-info-link" href={googleMapsUrl(pointInfoData.point)} target="_blank" rel="noreferrer">
+            Ouvrir dans Google Maps
+          </a>
+          <div className="point-info-table">{renderPointPropertyRows(pointInfoData.point)}</div>
+        </aside>
+      ) : null}
     </div>
   );
 }

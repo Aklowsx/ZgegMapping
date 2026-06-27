@@ -2,13 +2,14 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import { ControlPointPanel } from "./components/ControlPointPanel";
 import { CsvPointView } from "./components/CsvPointView";
+import { InfoPointPanel } from "./components/InfoPointPanel";
 import { LayerPanel } from "./components/LayerPanel";
 import { MapView } from "./components/MapView";
 import { PointLayerPanel } from "./components/PointLayerPanel";
 import { SourceImageView } from "./components/SourceImageView";
 import { Toolbar } from "./components/Toolbar";
 import type { ImportMode } from "./components/Toolbar";
-import type { ControlPoint, CoordinateProjection, ExportMapArea, MapLayer, MapProject, PointLayer } from "./types/project";
+import type { BackgroundRemovalSettings, ControlPoint, CoordinateProjection, ExportMapArea, InfoPoint, MapLayer, MapProject, PointLayer } from "./types/project";
 import { BASE_MAPS, DEFAULT_BASE_MAP_ID, getBaseMap } from "./utils/baseMaps";
 import { roundedLatLng } from "./utils/coordinateConversion";
 import { ipcClient } from "./utils/ipcClient";
@@ -30,6 +31,8 @@ type OperationProgress = {
 };
 
 type ThemeMode = "day" | "night";
+type SidePanelId = "layers" | "csv" | "info" | "control";
+type MapPlacementMode = "info" | "control" | null;
 
 export default function App() {
   const [project, setProject] = useState<MapProject>(() => createEmptyProject());
@@ -50,6 +53,8 @@ export default function App() {
   const [focusPointLayerRequest, setFocusPointLayerRequest] = useState<{ pointLayerId: string; nonce: number } | null>(null);
   const [exportSelectionEnabled, setExportSelectionEnabled] = useState(false);
   const [exportSelectionArea, setExportSelectionArea] = useState<ExportMapArea | null>(null);
+  const [openSidePanel, setOpenSidePanel] = useState<SidePanelId>("layers");
+  const [mapPlacementMode, setMapPlacementMode] = useState<MapPlacementMode>(null);
   const [panelSizes, setPanelSizes] = useState({ source: 520, side: 360 });
   const workspaceRef = useRef<HTMLElement | null>(null);
   const resizeTargetRef = useRef<"source" | "side" | null>(null);
@@ -61,6 +66,7 @@ export default function App() {
     [project.layers, selectedLayerId],
   );
   const pointLayers = project.pointLayers ?? [];
+  const infoPoints = project.infoPoints ?? [];
   const baseMap = useMemo(() => getBaseMap(baseMapId), [baseMapId]);
 
   useEffect(() => {
@@ -294,6 +300,7 @@ export default function App() {
       const point: ControlPoint = {
         id: `cp-${Date.now()}`,
         name: `Point ${pointIndex}`,
+        comment: "",
         sourcePixel: merged.sourcePixel,
         targetLatLng: merged.targetLatLng,
       };
@@ -311,6 +318,70 @@ export default function App() {
       setDraftPoint(merged);
       setStatus(merged.sourcePixel ? "Point source defini. Cliquez maintenant sur le fond de carte." : "Point cible defini. Cliquez maintenant sur l'image source.");
     }
+  }
+
+  function addControlPointAtTarget(targetLatLng: ControlPoint["targetLatLng"]) {
+    if (!selectedLayer) {
+      setStatus("Selectionnez une couche avant d'ajouter un point de controle.");
+      return;
+    }
+
+    const pointIndex = selectedLayer.controlPoints.length + 1;
+    const previousPoint = selectedLayer.controlPoints.at(-1);
+    const sourcePixel = draftPoint.sourcePixel ?? {
+      x: previousPoint ? previousPoint.sourcePixel.x + 20 : 0,
+      y: previousPoint ? previousPoint.sourcePixel.y + 20 : 0,
+    };
+    const point: ControlPoint = {
+      id: `cp-${Date.now()}`,
+      name: `Point ${pointIndex}`,
+      comment: "",
+      sourcePixel,
+      targetLatLng,
+    };
+
+    updateLayer(selectedLayer.id, (layer) => ({
+      ...layer,
+      controlPoints: [...layer.controlPoints, point],
+    }));
+    setDraftPoint({});
+    setMapPlacementMode(null);
+    setOpenSidePanel("control");
+    setStatus(`${point.name} ajoute sur la carte. Ajustez X/Y source si besoin.`);
+  }
+
+  function addInfoPointAtTarget(targetLatLng: InfoPoint["targetLatLng"]) {
+    const pointIndex = infoPoints.length + 1;
+    const point: InfoPoint = {
+      id: `info-${Date.now()}`,
+      name: `Info ${pointIndex}`,
+      comment: "",
+      exportEnabled: true,
+      targetLatLng,
+    };
+
+    updateProject((current) => ({
+      ...current,
+      infoPoints: [...(current.infoPoints ?? []), point],
+    }));
+    setDraftPoint((current) => ({ ...current, targetLatLng: undefined }));
+    setMapPlacementMode(null);
+    setOpenSidePanel("info");
+    setStatus(`${point.name} ajoute sur la carte.`);
+  }
+
+  function handleMapPick(targetLatLng: ControlPoint["targetLatLng"]) {
+    if (mapPlacementMode === "info") {
+      addInfoPointAtTarget(targetLatLng);
+      return;
+    }
+
+    if (mapPlacementMode === "control") {
+      addControlPointAtTarget(targetLatLng);
+      return;
+    }
+
+    addOrCompletePoint({ targetLatLng });
   }
 
   async function importMap() {
@@ -363,6 +434,50 @@ export default function App() {
     }
   }
 
+  async function removeLayerBackground(layerId: string, settings: BackgroundRemovalSettings) {
+    const layer = project.layers.find((candidate) => candidate.id === layerId);
+    if (!layer) {
+      setStatus("Selectionnez une carte avant de supprimer le fond.");
+      return;
+    }
+
+    setBusy(true);
+    setStatus("Suppression du fond par couleur...");
+    startElapsedProgress("Suppression du fond");
+    try {
+      const result = await ipcClient.removeLayerBackground({
+        projectName: project.name,
+        layer,
+        color: settings.color,
+        tolerance: settings.tolerance,
+      });
+      if (result.success && result.output) {
+        updateLayer(layerId, (currentLayer) => ({
+          ...currentLayer,
+          processedImagePath: result.output,
+          backgroundRemoval: {
+            ...settings,
+            enabled: true,
+            processedImagePath: result.output,
+          },
+          georefFilePath: undefined,
+          overlayImagePath: undefined,
+          overlayImageUrl: undefined,
+          overlayBounds: undefined,
+          tilesPath: undefined,
+          tileUrlTemplate: undefined,
+        }));
+        setDraftPoint({});
+        setStatus(`${result.message} Replacez ou verifiez les points avant de georeferencer.`);
+        return;
+      }
+      setStatus(result.message);
+    } finally {
+      completeProgress();
+      setBusy(false);
+    }
+  }
+
   async function saveProject() {
     setBusy(true);
     setStatus("Sauvegarde du projet...");
@@ -387,6 +502,7 @@ export default function App() {
           ...result.project,
           layers: result.project.layers ?? [],
           pointLayers: result.project.pointLayers ?? [],
+          infoPoints: result.project.infoPoints ?? [],
         });
         setSelectedLayerId(result.project.layers[0]?.id ?? null);
         setSelectedPointLayerId(result.project.pointLayers?.[0]?.id ?? null);
@@ -549,6 +665,80 @@ export default function App() {
     }));
   }
 
+  function addManualControlPoint() {
+    if (!selectedLayer) {
+      setStatus("Selectionnez une couche avant d'ajouter un point.");
+      return;
+    }
+    setOpenSidePanel("control");
+    setMapPlacementMode("control");
+    setStatus("Cliquez sur le fond de carte pour placer le point de controle.");
+  }
+
+  function addManualInfoPoint() {
+    setOpenSidePanel("info");
+    setMapPlacementMode("info");
+    setStatus("Cliquez sur le fond de carte pour placer le point d'info.");
+  }
+
+  function updateInfoPoint(point: InfoPoint) {
+    updateProject((current) => ({
+      ...current,
+      infoPoints: (current.infoPoints ?? []).map((existing) => (existing.id === point.id ? point : existing)),
+    }));
+  }
+
+  function deleteInfoPoint(pointId: string) {
+    updateProject((current) => ({
+      ...current,
+      infoPoints: (current.infoPoints ?? []).filter((point) => point.id !== pointId),
+    }));
+  }
+
+  function assignControlPointAsInfo(point: ControlPoint) {
+    const pointIndex = infoPoints.length + 1;
+    const infoPoint: InfoPoint = {
+      id: `info-${Date.now()}`,
+      name: point.name || `Info ${pointIndex}`,
+      comment: point.comment ?? "",
+      exportEnabled: true,
+      targetLatLng: point.targetLatLng,
+    };
+
+    updateProject((current) => ({
+      ...current,
+      infoPoints: [...(current.infoPoints ?? []), infoPoint],
+    }));
+    setStatus(`${point.name} assigne comme point d'info.`);
+  }
+
+  function assignInfoPointAsControl(point: InfoPoint) {
+    if (!selectedLayer) {
+      setStatus("Selectionnez une couche avant d'assigner ce point en controle.");
+      return;
+    }
+
+    const pointIndex = selectedLayer.controlPoints.length + 1;
+    const previousPoint = selectedLayer.controlPoints.at(-1);
+    const controlPoint: ControlPoint = {
+      id: `cp-${Date.now()}`,
+      name: point.name || `Point ${pointIndex}`,
+      comment: point.comment ?? "",
+      sourcePixel: draftPoint.sourcePixel ?? {
+        x: previousPoint ? previousPoint.sourcePixel.x + 20 : 0,
+        y: previousPoint ? previousPoint.sourcePixel.y + 20 : 0,
+      },
+      targetLatLng: point.targetLatLng,
+    };
+
+    updateLayer(selectedLayer.id, (layer) => ({
+      ...layer,
+      controlPoints: [...layer.controlPoints, controlPoint],
+    }));
+    setDraftPoint((current) => ({ ...current, sourcePixel: undefined }));
+    setStatus(`${point.name} assigne comme point de controle. Ajustez X/Y source si besoin.`);
+  }
+
   function deleteControlPoint(pointId: string) {
     if (!selectedLayer) {
       return;
@@ -593,6 +783,22 @@ export default function App() {
     }));
     setFocusPointLayerRequest({ pointLayerId, nonce: Date.now() });
     setStatus(`Projection des points : ${projection}.`);
+  }
+
+  function updatePointExport(pointLayerId: string, pointId: string, exportEnabled: boolean) {
+    updatePointLayer(pointLayerId, (pointLayer) => ({
+      ...pointLayer,
+      points: pointLayer.points.map((point) => (point.id === pointId ? { ...point, exportEnabled } : point)),
+    }));
+    setStatus(exportEnabled ? "Point ajoute a l'export PDF." : "Point retire de l'export PDF.");
+  }
+
+  function updatePointLayerExportAll(pointLayerId: string, exportEnabled: boolean) {
+    updatePointLayer(pointLayerId, (pointLayer) => ({
+      ...pointLayer,
+      points: pointLayer.points.map((point) => ({ ...point, exportEnabled })),
+    }));
+    setStatus(exportEnabled ? "Tous les points du CSV seront exportes." : "Tous les points du CSV sont retires de l'export.");
   }
 
   function pointLayerColumns(pointLayer: PointLayer) {
@@ -687,6 +893,7 @@ export default function App() {
                   labelColumn,
                 }))
               }
+              onExportAllChange={updatePointLayerExportAll}
             />
           ) : (
             <SourceImageView
@@ -694,11 +901,13 @@ export default function App() {
               layer={selectedLayer}
               selectedLayerId={selectedLayerId}
               draftPoint={draftPoint.sourcePixel}
+              busy={busy}
               onSelectLayer={(layerId) => {
                 setSelectedLayerId(layerId);
                 setDraftPoint({});
               }}
               onPickSource={(sourcePixel) => addOrCompletePoint({ sourcePixel })}
+              onRemoveBackground={removeLayerBackground}
             />
           )}
         </section>
@@ -715,6 +924,7 @@ export default function App() {
           <MapView
             layers={project.layers}
             pointLayers={pointLayers}
+            infoPoints={infoPoints}
             baseMap={baseMap}
             baseMapOpacity={baseMapOpacity}
             selectedLayerId={selectedLayerId}
@@ -722,7 +932,8 @@ export default function App() {
             focusLayerRequest={focusLayerRequest}
             focusPointLayerRequest={focusPointLayerRequest}
             exportSelectionEnabled={exportSelectionEnabled}
-            onPickTarget={(targetLatLng) => addOrCompletePoint({ targetLatLng })}
+            onPickTarget={handleMapPick}
+            onPointExportChange={updatePointExport}
             onExportAreaChange={(area) => {
               setExportSelectionArea(area);
               if (area) {
@@ -745,24 +956,42 @@ export default function App() {
           <LayerPanel
             layers={project.layers}
             selectedLayerId={selectedLayerId}
+            isOpen={openSidePanel === "layers"}
             onSelectLayer={(layerId) => {
               setSelectedLayerId(layerId);
               setDraftPoint({});
             }}
+            onToggleOpen={() => setOpenSidePanel("layers")}
             onLayersChange={setLayers}
             onFocusLayer={(layerId) => setFocusLayerRequest({ layerId, nonce: Date.now() })}
           />
           <PointLayerPanel
             pointLayers={pointLayers}
+            isOpen={openSidePanel === "csv"}
+            onToggleOpen={() => setOpenSidePanel("csv")}
             onPointLayersChange={setPointLayers}
             onFocusPointLayer={(pointLayerId) => {
               setSelectedPointLayerId(pointLayerId);
               setFocusPointLayerRequest({ pointLayerId, nonce: Date.now() });
             }}
           />
+          <InfoPointPanel
+            infoPoints={infoPoints}
+            canAssignControl={Boolean(selectedLayer)}
+            isOpen={openSidePanel === "info"}
+            onPointAdd={addManualInfoPoint}
+            onToggleOpen={() => setOpenSidePanel("info")}
+            onPointChange={updateInfoPoint}
+            onPointDelete={deleteInfoPoint}
+            onAssignControl={assignInfoPointAsControl}
+          />
           <ControlPointPanel
             layer={selectedLayer}
             draftPoint={draftPoint}
+            isOpen={openSidePanel === "control"}
+            onPointAdd={addManualControlPoint}
+            onToggleOpen={() => setOpenSidePanel("control")}
+            onAssignInfo={assignControlPointAsInfo}
             onPointChange={updateControlPoint}
             onPointDelete={deleteControlPoint}
           />

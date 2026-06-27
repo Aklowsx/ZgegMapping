@@ -11,7 +11,7 @@ export function filePathToUrl(filePath?: string) {
 }
 
 export function layerDisplayImage(layer?: MapLayer) {
-  return layer?.convertedImagePath || layer?.originalFilePath || "";
+  return layer?.processedImagePath || layer?.convertedImagePath || layer?.originalFilePath || "";
 }
 
 export function controlPointBounds(points: ControlPoint[]) {

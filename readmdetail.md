@@ -272,12 +272,14 @@ Projections prises en charge :
 
 - `EPSG:4326` / WGS84 latitude-longitude ;
 - `EPSG:3857` / Web Mercator ;
-- `EPSG:2154` / Lambert 93.
+- `EPSG:2154` / Lambert 93 ;
+- `EPSG:27572` / Lambert II etendu.
 
 Si aucune projection n'est precisee, l'application detecte automatiquement :
 
 - `lat/lng` si les valeurs ressemblent a des coordonnees geographiques ;
 - Lambert 93 si les valeurs ressemblent a des coordonnees metropolitaines `EPSG:2154` ;
+- Lambert II etendu si les valeurs ressemblent a `EPSG:27572` ou si `lambertOuvrage = 5` ;
 - Web Mercator sinon.
 
 Chaque point garde ses coordonnees source et recoit une coordonnee convertie :
@@ -287,7 +289,7 @@ source: {
   x: number;
   y: number;
 };
-sourceProjection: "EPSG:4326" | "EPSG:3857" | "EPSG:2154";
+sourceProjection: "EPSG:4326" | "EPSG:3857" | "EPSG:2154" | "EPSG:27572";
 targetLatLng: {
   lat: number;
   lng: number;
@@ -314,7 +316,7 @@ Le tableau affiche les colonnes utiles du CSV :
 
 Les options permettent de :
 
-- choisir le type de coordonnees source : `EPSG:4326`, `EPSG:3857` ou `EPSG:2154` ;
+- choisir le type de coordonnees source : `EPSG:4326`, `EPSG:3857`, `EPSG:2154` ou `EPSG:27572` ;
 - recalculer les points convertis quand la projection change ;
 - cocher ou decocher l'affichage d'un texte a cote des points ;
 - choisir la colonne CSV a utiliser comme nom affiche.
@@ -341,7 +343,7 @@ projects/<nom_projet>/control_points/<layer-id>.json
 4. Le script verifie la presence de `gdal_translate` et `gdalwarp`.
 5. Le script transforme les points React en GCP GDAL.
 6. `gdal_translate` cree un fichier intermediaire avec les GCP.
-7. `gdalwarp` reprojette ce fichier en `EPSG:3857`.
+7. `gdalwarp` reprojette ce fichier en `EPSG:3857` avec une bande alpha de sortie pour conserver les zones transparentes.
 8. Le GeoTIFF final est ecrit dans :
 
 ```text
@@ -356,7 +358,7 @@ georefFilePath: string
 
 ### 2.10 Apercu rapide sans tuiles
 
-Le bouton `Apercu rapide` transforme un GeoTIFF en une seule image JPEG optimisee pour l'affichage.
+Le bouton `Apercu rapide` transforme un GeoTIFF en une seule image PNG optimisee pour l'affichage, en conservant l'alpha.
 
 Cette option evite de generer toute la pyramide de tuiles. Elle est donc beaucoup plus rapide pour verifier que le georeferencement est correct.
 
@@ -371,11 +373,11 @@ Etapes :
 2. Electron lance le script Python `backend/generate_overlay.py`.
 3. Le script lit les informations geographiques avec `gdalinfo -json`.
 4. Le script calcule les bornes latitude/longitude de l'image.
-5. Le script cree un JPEG limite par defaut a 4096 px sur son plus grand cote avec `gdal_translate`.
+5. Le script cree un PNG limite par defaut a 4096 px sur son plus grand cote avec `gdal_translate`.
 6. L'image est ecrite dans :
 
 ```text
-projects/<nom_projet>/overlays/<layer-id>.jpg
+projects/<nom_projet>/overlays/<layer-id>.png
 ```
 
 Quand la generation reussit, la couche recoit :
@@ -818,9 +820,9 @@ Role des dossiers :
 
 - `originals/` : fichiers importes par l'utilisateur ;
 - `points/` : CSV de points importes ;
-- `converted/` : PNG generes depuis les PDF ;
+- `converted/` : PNG generes depuis les PDF ou par suppression de fond ;
 - `georeferenced/` : GeoTIFF produits par GDAL ;
-- `overlays/` : JPEG optimises pour l'apercu rapide ;
+- `overlays/` : PNG optimises pour l'apercu rapide ;
 - `tiles/` : tuiles XYZ produites par `gdal2tiles` ;
 - `logs/` : traces des commandes Python/GDAL ;
 - `control_points/` : points de controle exportes en JSON avant georeferencement ;
@@ -894,7 +896,7 @@ Le flux inverse fonctionne aussi : carte d'abord, image ensuite.
 2. React appelle `ipcClient.generateOverlay`.
 3. Electron lance `backend/generate_overlay.py`.
 4. Python lit les bornes avec `gdalinfo -json`.
-5. Python cree un JPEG optimise avec `gdal_translate`.
+5. Python cree un PNG optimise avec `gdal_translate`.
 6. Python renvoie `imagePath`, `imageUrl` et `bounds`.
 7. React stocke ces valeurs dans la couche.
 8. `MapView` cree ou met a jour une `L.ImageOverlay`.
@@ -944,7 +946,7 @@ projects/<nom_projet>/georeferenced/<layer-id>.tif
 2. l'apercu rapide :
 
 ```text
-projects/<nom_projet>/overlays/<layer-id>.jpg
+projects/<nom_projet>/overlays/<layer-id>.png
 ```
 
 3. les tuiles locales :
@@ -1132,6 +1134,6 @@ Le coeur du projet est donc le passage :
 image/PDF importe
 -> points de controle utilisateur
 -> GeoTIFF EPSG:3857
--> JPEG georeference rapide ou tuiles XYZ locales
+-> PNG georeference rapide ou tuiles XYZ locales
 -> surcouche Leaflet sur le fond selectionne
 ```

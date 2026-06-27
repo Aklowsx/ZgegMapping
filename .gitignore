@@ -5,3 +5,5 @@ __pycache__/
 *.pyc
 projects/*/
 !projects/.gitkeep
+.DS_Store
+**/.DS_Store

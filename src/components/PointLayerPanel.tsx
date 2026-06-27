@@ -1,25 +1,30 @@
-import { Eye, EyeOff, LocateFixed, Trash2 } from "lucide-react";
+import { ChevronDown, Eye, EyeOff, LocateFixed, Trash2 } from "lucide-react";
 import type { PointLayer } from "../types/project";
 
 type PointLayerPanelProps = {
   pointLayers: PointLayer[];
+  isOpen: boolean;
+  onToggleOpen(): void;
   onPointLayersChange(pointLayers: PointLayer[]): void;
   onFocusPointLayer(pointLayerId: string): void;
 };
 
-export function PointLayerPanel({ pointLayers, onPointLayersChange, onFocusPointLayer }: PointLayerPanelProps) {
+export function PointLayerPanel({ pointLayers, isOpen, onToggleOpen, onPointLayersChange, onFocusPointLayer }: PointLayerPanelProps) {
   function updatePointLayer(pointLayerId: string, updater: (pointLayer: PointLayer) => PointLayer) {
     onPointLayersChange(pointLayers.map((pointLayer) => (pointLayer.id === pointLayerId ? updater(pointLayer) : pointLayer)));
   }
 
   return (
-    <section className="panel point-layer-panel">
+    <section className={`panel point-layer-panel accordion-panel ${isOpen ? "is-open" : ""}`}>
       <div className="panel-title">
-        <h2>Points CSV</h2>
+        <button type="button" className="panel-title-toggle" onClick={onToggleOpen} aria-expanded={isOpen}>
+          <ChevronDown size={16} aria-hidden="true" />
+          <h2>Points CSV</h2>
+        </button>
         <span>{pointLayers.length}</span>
       </div>
 
-      {pointLayers.length === 0 ? (
+      {!isOpen ? null : pointLayers.length === 0 ? (
         <p className="muted">Aucun CSV de points importe.</p>
       ) : (
         <div className="point-layer-list">

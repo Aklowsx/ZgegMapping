@@ -1,15 +1,17 @@
-import { Eye, EyeOff, LocateFixed, MoveDown, MoveUp, Trash2 } from "lucide-react";
+import { ChevronDown, Eye, EyeOff, LocateFixed, MoveDown, MoveUp, Trash2 } from "lucide-react";
 import type { MapLayer } from "../types/project";
 
 type LayerPanelProps = {
   layers: MapLayer[];
   selectedLayerId: string | null;
+  isOpen: boolean;
   onSelectLayer(layerId: string): void;
+  onToggleOpen(): void;
   onLayersChange(layers: MapLayer[]): void;
   onFocusLayer(layerId: string): void;
 };
 
-export function LayerPanel({ layers, selectedLayerId, onSelectLayer, onLayersChange, onFocusLayer }: LayerPanelProps) {
+export function LayerPanel({ layers, selectedLayerId, isOpen, onSelectLayer, onToggleOpen, onLayersChange, onFocusLayer }: LayerPanelProps) {
   function updateLayer(layerId: string, updater: (layer: MapLayer) => MapLayer) {
     onLayersChange(layers.map((layer) => (layer.id === layerId ? updater(layer) : layer)));
   }
@@ -28,13 +30,16 @@ export function LayerPanel({ layers, selectedLayerId, onSelectLayer, onLayersCha
   }
 
   return (
-    <section className="panel">
+    <section className={`panel accordion-panel ${isOpen ? "is-open" : ""}`}>
       <div className="panel-title">
-        <h2>Couches</h2>
+        <button type="button" className="panel-title-toggle" onClick={onToggleOpen} aria-expanded={isOpen}>
+          <ChevronDown size={16} aria-hidden="true" />
+          <h2>Couches</h2>
+        </button>
         <span>{layers.length}</span>
       </div>
 
-      {layers.length === 0 ? (
+      {!isOpen ? null : layers.length === 0 ? (
         <p className="muted">Aucune couche importee.</p>
       ) : (
         <div className="layer-list">

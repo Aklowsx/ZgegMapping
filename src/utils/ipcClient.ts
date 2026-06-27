@@ -18,6 +18,12 @@ declare global {
       saveProject(project: MapProject): Promise<SaveResult>;
       openProject(): Promise<OpenResult>;
       georeferenceLayer(payload: { projectName: string; layer: MapLayer }): Promise<GeorefResult>;
+      removeLayerBackground(payload: {
+        projectName: string;
+        layer: MapLayer;
+        color: string;
+        tolerance: number;
+      }): Promise<OperationResult<{ output?: string; removedPixels?: number }>>;
       generateOverlay(payload: { projectName: string; layer: MapLayer }): Promise<OverlayResult>;
       generateTiles(payload: { projectName: string; layer: MapLayer }): Promise<TilesResult>;
       exportPdf(payload: {

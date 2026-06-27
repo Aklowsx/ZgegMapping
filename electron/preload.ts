@@ -6,6 +6,7 @@ const api = {
   saveProject: (project: unknown) => ipcRenderer.invoke("project:save", project),
   openProject: () => ipcRenderer.invoke("project:open"),
   georeferenceLayer: (payload: unknown) => ipcRenderer.invoke("layer:georeference", payload),
+  removeLayerBackground: (payload: unknown) => ipcRenderer.invoke("layer:remove-background", payload),
   generateOverlay: (payload: unknown) => ipcRenderer.invoke("layer:generate-overlay", payload),
   generateTiles: (payload: unknown) => ipcRenderer.invoke("layer:generate-tiles", payload),
   exportPdf: (payload: unknown) => ipcRenderer.invoke("project:export-pdf", payload),

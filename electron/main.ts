@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, screen, shell } from "electron";
 import type { IpcMainInvokeEvent, Rectangle } from "electron";
 import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
@@ -17,6 +17,7 @@ type JsonResult = {
 type PdfControlPoint = {
   id: string;
   name: string;
+  comment?: string;
   sourcePixel: {
     x: number;
     y: number;
@@ -27,7 +28,7 @@ type PdfControlPoint = {
   };
 };
 
-type CoordinateProjection = "EPSG:4326" | "EPSG:3857" | "EPSG:2154";
+type CoordinateProjection = "EPSG:4326" | "EPSG:3857" | "EPSG:2154" | "EPSG:27572";
 
 type ImportedPoint = {
   id: string;
@@ -37,6 +38,7 @@ type ImportedPoint = {
     y: number;
   };
   sourceProjection: CoordinateProjection;
+  exportEnabled?: boolean;
   targetLatLng: {
     lat: number;
     lng: number;
@@ -55,11 +57,29 @@ type PdfPointLayer = {
   points: ImportedPoint[];
 };
 
+type PdfInfoPoint = {
+  id: string;
+  name: string;
+  comment?: string;
+  exportEnabled?: boolean;
+  targetLatLng: {
+    lat: number;
+    lng: number;
+  };
+};
+
 type PdfLayer = {
   id: string;
   name: string;
   originalFilePath: string;
   convertedImagePath?: string;
+  processedImagePath?: string;
+  backgroundRemoval?: {
+    enabled: boolean;
+    color: string;
+    tolerance: number;
+    processedImagePath?: string;
+  };
   georefFilePath?: string;
   overlayImagePath?: string;
   overlayImageUrl?: string;
@@ -83,6 +103,7 @@ type PdfProject = {
   updatedAt: string;
   layers: PdfLayer[];
   pointLayers?: PdfPointLayer[];
+  infoPoints?: PdfInfoPoint[];
 };
 
 type CsvRow = {
@@ -300,6 +321,23 @@ function normalizeProjection(value: string | undefined): CoordinateProjection | 
   if (["2154", "epsg2154", "lambert93", "lambertzone93", "l93"].includes(normalized)) {
     return "EPSG:2154";
   }
+  if (["27572", "epsg27572", "lambert2", "lambertii", "lambert2etendu", "lambertiietendu", "l2e"].includes(normalized)) {
+    return "EPSG:27572";
+  }
+  return null;
+}
+
+function projectionFromRow(row: CsvRow) {
+  const explicitProjection = normalizeProjection(pickValue(row, ["projection", "epsg", "srid", "srs", "crs"]));
+  if (explicitProjection) {
+    return explicitProjection;
+  }
+
+  const lambertCode = normalizeHeader(pickValue(row, ["lambertOuvrage", "lambert", "codeLambert"]) ?? "");
+  if (["5", "l2e", "27572", "epsg27572", "lambert2etendu", "lambertiietendu"].includes(lambertCode)) {
+    return "EPSG:27572";
+  }
+
   return null;
 }
 
@@ -312,6 +350,9 @@ function detectProjection(x: number, y: number, explicitProjection: CoordinatePr
   }
   if (x >= 0 && x <= 1300000 && y >= 6000000 && y <= 7200000) {
     return "EPSG:2154";
+  }
+  if (x >= 0 && x <= 1300000 && y >= 1500000 && y <= 2700000) {
+    return "EPSG:27572";
   }
   return "EPSG:3857";
 }
@@ -365,12 +406,90 @@ function lambert93ToWgs84(x: number, y: number) {
   };
 }
 
+function geodeticToCartesian(lat: number, lng: number, a: number, e2: number) {
+  const sinLat = Math.sin(lat);
+  const cosLat = Math.cos(lat);
+  const n = a / Math.sqrt(1 - e2 * sinLat * sinLat);
+
+  return {
+    x: n * cosLat * Math.cos(lng),
+    y: n * cosLat * Math.sin(lng),
+    z: n * (1 - e2) * sinLat,
+  };
+}
+
+function cartesianToWgs84(x: number, y: number, z: number) {
+  const a = 6378137;
+  const e2 = 0.0066943799901413165;
+  const p = Math.sqrt(x * x + y * y);
+  const lng = Math.atan2(y, x);
+  let lat = Math.atan2(z, p * (1 - e2));
+
+  for (let index = 0; index < 8; index += 1) {
+    const sinLat = Math.sin(lat);
+    const n = a / Math.sqrt(1 - e2 * sinLat * sinLat);
+    lat = Math.atan2(z + e2 * n * sinLat, p);
+  }
+
+  return {
+    lat: (lat * 180) / Math.PI,
+    lng: (lng * 180) / Math.PI,
+  };
+}
+
+function lambert2ExtendedToWgs84(x: number, y: number) {
+  const a = 6378249.2;
+  const inverseFlattening = 293.466021293627;
+  const f = 1 / inverseFlattening;
+  const e2 = 2 * f - f * f;
+  const e = Math.sqrt(e2);
+  const lat0 = (46.8 * Math.PI) / 180;
+  const lon0 = 0;
+  const k0 = 0.99987742;
+  const falseEasting = 600000;
+  const falseNorthing = 2200000;
+  const parisMeridian = (2.33722917 * Math.PI) / 180;
+
+  function m(lat: number) {
+    const sinLat = Math.sin(lat);
+    return Math.cos(lat) / Math.sqrt(1 - e2 * sinLat * sinLat);
+  }
+
+  function t(lat: number) {
+    const sinLat = Math.sin(lat);
+    return Math.tan(Math.PI / 4 - lat / 2) / Math.pow((1 - e * sinLat) / (1 + e * sinLat), e / 2);
+  }
+
+  const n = Math.sin(lat0);
+  const t0 = t(lat0);
+  const f0 = m(lat0) / (n * Math.pow(t0, n));
+  const rho0 = a * k0 * f0 * Math.pow(t0, n);
+  const dx = x - falseEasting;
+  const dy = rho0 - (y - falseNorthing);
+  const rho = Math.sign(n) * Math.sqrt(dx * dx + dy * dy);
+  const theta = Math.atan2(dx, dy);
+  const targetT = Math.pow(rho / (a * k0 * f0), 1 / n);
+
+  let lat = Math.PI / 2 - 2 * Math.atan(targetT);
+  for (let index = 0; index < 8; index += 1) {
+    const sinLat = Math.sin(lat);
+    lat = Math.PI / 2 - 2 * Math.atan(targetT * Math.pow((1 - e * sinLat) / (1 + e * sinLat), e / 2));
+  }
+
+  const lngParis = lon0 + theta / n;
+  const ntf = geodeticToCartesian(lat, lngParis + parisMeridian, a, e2);
+  return cartesianToWgs84(ntf.x - 168, ntf.y - 60, ntf.z + 320);
+}
+
 function convertToWgs84(x: number, y: number, projection: CoordinateProjection) {
   if (projection === "EPSG:4326") {
     return { lat: y, lng: x };
   }
   if (projection === "EPSG:2154") {
     return lambert93ToWgs84(x, y);
+  }
+  if (projection === "EPSG:27572") {
+    return lambert2ExtendedToWgs84(x, y);
   }
   return webMercatorToWgs84(x, y);
 }
@@ -386,12 +505,12 @@ function parsePointRows(rows: CsvRow[]): { points: ImportedPoint[]; projection: 
   const columns = rows[0] ? Object.keys(rows[0].properties) : [];
 
   rows.forEach((row, index) => {
-    const explicitProjection = normalizeProjection(pickValue(row, ["projection", "epsg", "srid", "srs", "crs"]));
+    const explicitProjection = projectionFromRow(row);
     const coordinateText = parseCoordinateText(pickValue(row, ["geo_point_2d", "geopoint", "coordinates", "coordonnees", "geom", "geometry", "wkt"]));
     const latValue = parseNumber(pickValue(row, ["lat", "latitude", "y_wgs84"]));
     const lngValue = parseNumber(pickValue(row, ["lng", "lon", "long", "longitude", "x_wgs84"]));
-    const rawX = parseNumber(pickValue(row, ["x", "easting", "est", "x_l93", "x_lambert", "coordx", "coordonneex"]));
-    const rawY = parseNumber(pickValue(row, ["y", "northing", "nord", "y_l93", "y_lambert", "coordy", "coordonney"]));
+    const rawX = parseNumber(pickValue(row, ["x", "easting", "est", "x_l93", "x_lambert", "xouvrage", "xouvl2e", "xouvl2", "xl2e", "coordx", "coordonneex"]));
+    const rawY = parseNumber(pickValue(row, ["y", "northing", "nord", "y_l93", "y_lambert", "youvrage", "youvl2e", "youvl2", "yl2e", "coordy", "coordonney"]));
 
     const hasLatLng = lngValue !== null && latValue !== null;
     const x = hasLatLng ? lngValue : coordinateText?.x ?? rawX;
@@ -415,12 +534,13 @@ function parsePointRows(rows: CsvRow[]): { points: ImportedPoint[]; projection: 
     }
 
     firstProjection ??= sourceProjection;
-    const name = pickValue(row, ["name", "nom", "label", "libelle", "id", "numero"]) || `Point ${points.length + 1}`;
+    const name = pickValue(row, ["numcavite", "nomcavite", "name", "nom", "label", "libelle", "id", "numero"]) || `Point ${points.length + 1}`;
     points.push({
       id: `csv-point-${Date.now()}-${index}`,
       name,
       source: { x, y },
       sourceProjection,
+      exportEnabled: true,
       targetLatLng: {
         lat: Number(targetLatLng.lat.toFixed(7)),
         lng: Number(targetLatLng.lng.toFixed(7)),
@@ -434,7 +554,7 @@ function parsePointRows(rows: CsvRow[]): { points: ImportedPoint[]; projection: 
     projection: firstProjection ?? "EPSG:4326",
     skippedRows,
     columns,
-    labelColumn: columns.find((column) => ["nom", "name", "label", "libelle", "id", "numero"].includes(normalizeHeader(column))),
+    labelColumn: columns.find((column) => ["numcavite", "nomcavite", "nom", "name", "label", "libelle", "id", "numero"].includes(normalizeHeader(column))),
   };
 }
 
@@ -447,9 +567,203 @@ function escapeHtml(value: unknown) {
     .replace(/'/g, "&#039;");
 }
 
+function googleMapsUrl(lat: number, lng: number) {
+  return `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`;
+}
+
+function webMercatorUnit(lat: number, lng: number) {
+  const clampedLat = Math.max(-85.05112878, Math.min(85.05112878, lat));
+  const latRad = (clampedLat * Math.PI) / 180;
+  return {
+    x: (lng + 180) / 360,
+    y: (1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2,
+  };
+}
+
+function exportablePointLinks(payload: ExportPdfPayload, width: number, height: number) {
+  const bounds = payload.area.bounds;
+  const northWest = webMercatorUnit(bounds.north, bounds.west);
+  const southEast = webMercatorUnit(bounds.south, bounds.east);
+  const mercatorWidth = southEast.x - northWest.x;
+  const mercatorHeight = southEast.y - northWest.y;
+
+  if (mercatorWidth <= 0 || mercatorHeight <= 0) {
+    return [];
+  }
+
+  const csvPointLinks = (payload.project.pointLayers ?? [])
+    .filter((pointLayer) => pointLayer.visible)
+    .flatMap((pointLayer) =>
+      pointLayer.points
+        .filter((point) => point.exportEnabled !== false)
+        .filter(
+          (point) =>
+            point.targetLatLng.lat <= bounds.north &&
+            point.targetLatLng.lat >= bounds.south &&
+            point.targetLatLng.lng >= bounds.west &&
+            point.targetLatLng.lng <= bounds.east,
+        )
+        .map((point) => {
+          const projected = webMercatorUnit(point.targetLatLng.lat, point.targetLatLng.lng);
+          return {
+            name: point.name,
+            href: googleMapsUrl(point.targetLatLng.lat, point.targetLatLng.lng),
+            x: ((projected.x - northWest.x) / mercatorWidth) * width,
+            y: ((projected.y - northWest.y) / mercatorHeight) * height,
+          };
+        }),
+    );
+
+  const infoPointLinks = (payload.project.infoPoints ?? [])
+    .filter((point) => point.exportEnabled !== false)
+    .filter(
+      (point) =>
+        point.targetLatLng.lat <= bounds.north &&
+        point.targetLatLng.lat >= bounds.south &&
+        point.targetLatLng.lng >= bounds.west &&
+        point.targetLatLng.lng <= bounds.east,
+    )
+    .map((point) => {
+      const projected = webMercatorUnit(point.targetLatLng.lat, point.targetLatLng.lng);
+      return {
+        name: point.name,
+        href: googleMapsUrl(point.targetLatLng.lat, point.targetLatLng.lng),
+        x: ((projected.x - northWest.x) / mercatorWidth) * width,
+        y: ((projected.y - northWest.y) / mercatorHeight) * height,
+      };
+    });
+
+  return [...csvPointLinks, ...infoPointLinks];
+}
+
+function mercatorBoundsSpan(bounds: ExportMapArea["bounds"]) {
+  const northWest = webMercatorUnit(bounds.north, bounds.west);
+  const southEast = webMercatorUnit(bounds.south, bounds.east);
+  return {
+    width: Math.max(0, southEast.x - northWest.x),
+    height: Math.max(0, southEast.y - northWest.y),
+  };
+}
+
+function streetDetailRenderSize(payload: ExportPdfPayload, captureRect: Rectangle) {
+  const ratio = captureRect.width / captureRect.height;
+  const span = mercatorBoundsSpan(payload.area.bounds);
+  const targetZoom = Math.min(18, Math.max(16, Number(payload.baseMap?.maxZoom ?? 18)));
+  const worldPixels = 256 * 2 ** targetZoom;
+  const minDimension = 1400;
+  const displayScaleFactor = Math.max(1, screen.getPrimaryDisplay().scaleFactor || 1);
+  const maxTextureSafeDimension = Math.floor(15000 / displayScaleFactor);
+  const maxDimension = Math.min(7200, maxTextureSafeDimension);
+  const maxPixels = 24000000;
+
+  let width = Math.round(span.width * worldPixels);
+  let height = Math.round(span.height * worldPixels);
+
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width < 1 || height < 1) {
+    width = Math.round(captureRect.width * 5);
+    height = Math.round(captureRect.height * 5);
+  }
+
+  if (width / height > ratio) {
+    height = Math.round(width / ratio);
+  } else {
+    width = Math.round(height * ratio);
+  }
+
+  if (width < minDimension && height < maxDimension) {
+    width = minDimension;
+    height = Math.round(width / ratio);
+  }
+  if (height < minDimension && width < maxDimension) {
+    height = minDimension;
+    width = Math.round(height * ratio);
+  }
+
+  if (width > maxDimension) {
+    width = maxDimension;
+    height = Math.round(width / ratio);
+  }
+  if (height > maxDimension) {
+    height = maxDimension;
+    width = Math.round(height * ratio);
+  }
+  if (width * height > maxPixels) {
+    const scale = Math.sqrt(maxPixels / (width * height));
+    width = Math.floor(width * scale);
+    height = Math.floor(height * scale);
+  }
+
+  return {
+    width: Math.max(1, width),
+    height: Math.max(1, height),
+    targetZoom,
+    capped: width >= maxDimension || height >= maxDimension || width * height >= maxPixels,
+  };
+}
+
+function sizeForMaxDimension(ratio: number, maxDimension: number) {
+  if (ratio >= 1) {
+    return {
+      width: maxDimension,
+      height: Math.max(1, Math.round(maxDimension / ratio)),
+    };
+  }
+
+  return {
+    width: Math.max(1, Math.round(maxDimension * ratio)),
+    height: maxDimension,
+  };
+}
+
+function fallbackRenderSizes(primary: { width: number; height: number }, captureRect: Rectangle) {
+  const ratio = captureRect.width / captureRect.height;
+  const candidates = [
+    primary,
+    sizeForMaxDimension(ratio, 5600),
+    sizeForMaxDimension(ratio, 4200),
+    sizeForMaxDimension(ratio, 3000),
+    sizeForMaxDimension(ratio, 2000),
+  ];
+  const seen = new Set<string>();
+
+  return candidates.filter((candidate) => {
+    const width = Math.max(1, Math.round(candidate.width));
+    const height = Math.max(1, Math.round(candidate.height));
+    const key = `${width}x${height}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  });
+}
+
 function renderPdfHtml(payload: ExportPdfPayload, mapImageDataUrl: string) {
   const cssWidth = Math.max(1, Math.round(payload.area.captureRect.width));
   const cssHeight = Math.max(1, Math.round(payload.area.captureRect.height));
+  const pointLinks = exportablePointLinks(payload, cssWidth, cssHeight);
+  const linkDiameter = 22;
+  const pointLinkHtml = pointLinks
+    .map(
+      (link) =>
+        `<a class="pdf-point-link" href="${escapeHtml(link.href)}" title="${escapeHtml(`${link.name} - Google Maps`)}" style="left:${Math.round(
+          link.x - linkDiameter / 2,
+        )}px;top:${Math.round(link.y - linkDiameter / 2)}px;width:${linkDiameter}px;height:${linkDiameter}px;">${escapeHtml(link.name)}</a>`,
+    )
+    .join("");
 
   return `<!doctype html>
 <html lang="fr">
@@ -469,6 +783,7 @@ function renderPdfHtml(payload: ExportPdfPayload, mapImageDataUrl: string) {
         margin: 0;
         overflow: hidden;
         background: #ffffff;
+        position: relative;
       }
 
       img {
@@ -476,10 +791,21 @@ function renderPdfHtml(payload: ExportPdfPayload, mapImageDataUrl: string) {
         height: ${cssHeight}px;
         display: block;
       }
+
+      .pdf-point-link {
+        position: absolute;
+        z-index: 2;
+        border-radius: 50%;
+        color: transparent;
+        background: rgba(255, 255, 255, 0);
+        text-decoration: none;
+        overflow: hidden;
+      }
     </style>
   </head>
   <body>
     <img src="${mapImageDataUrl}" alt="Zone selectionnee haute resolution" />
+    ${pointLinkHtml}
   </body>
 </html>`;
 }
@@ -570,13 +896,25 @@ function renderMapHtml(payload: ExportPdfPayload, width: number, height: number)
       name: pointLayer.name,
       color: pointLayer.color,
       showLabels: pointLayer.showLabels,
-      points: pointLayer.points.map((point) => ({
-        name: point.name,
-        label: pointLayer.labelColumn ? point.properties[pointLayer.labelColumn] : point.name,
-        lat: point.targetLatLng.lat,
-        lng: point.targetLatLng.lng,
-        sourceProjection: point.sourceProjection,
-      })),
+      points: pointLayer.points
+        .filter((point) => point.exportEnabled !== false)
+        .map((point) => ({
+          name: point.name,
+          label: pointLayer.labelColumn ? point.properties[pointLayer.labelColumn] : point.name,
+          lat: point.targetLatLng.lat,
+          lng: point.targetLatLng.lng,
+          googleMapsUrl: googleMapsUrl(point.targetLatLng.lat, point.targetLatLng.lng),
+          sourceProjection: point.sourceProjection,
+        })),
+    }));
+  const visibleInfoPoints = (payload.project.infoPoints ?? [])
+    .filter((point) => point.exportEnabled !== false)
+    .map((point) => ({
+      name: point.name,
+      comment: point.comment,
+      lat: point.targetLatLng.lat,
+      lng: point.targetLatLng.lng,
+      googleMapsUrl: googleMapsUrl(point.targetLatLng.lat, point.targetLatLng.lng),
     }));
 
   return `<!doctype html>
@@ -611,6 +949,7 @@ function renderMapHtml(payload: ExportPdfPayload, width: number, height: number)
         font-size: 11px;
         font-weight: 700;
       }
+
     </style>
   </head>
   <body>
@@ -621,6 +960,7 @@ function renderMapHtml(payload: ExportPdfPayload, width: number, height: number)
       const overlayLayers = ${JSON.stringify(visibleLayers)};
       const imageLayers = ${JSON.stringify(visibleImageLayers)};
       const pointLayers = ${JSON.stringify(visiblePointLayers)};
+      const infoPoints = ${JSON.stringify(visibleInfoPoints)};
       const bounds = L.latLngBounds(
         [exportBounds.south, exportBounds.west],
         [exportBounds.north, exportBounds.east]
@@ -687,9 +1027,9 @@ function renderMapHtml(payload: ExportPdfPayload, width: number, height: number)
       pointLayers.forEach((pointLayer) => {
         pointLayer.points.forEach((point) => {
           const marker = L.circleMarker([point.lat, point.lng], {
-            radius: 6,
-            color: pointLayer.color,
-            weight: 2,
+            radius: 4,
+            color: "#dc2626",
+            weight: 1.5,
             fillColor: "#ffffff",
             fillOpacity: 0.96
           }).addTo(map);
@@ -701,6 +1041,22 @@ function renderMapHtml(payload: ExportPdfPayload, width: number, height: number)
               className: "point-label"
             });
           }
+        });
+      });
+
+      infoPoints.forEach((point) => {
+        const marker = L.circleMarker([point.lat, point.lng], {
+          radius: 4,
+          color: "#16a34a",
+          weight: 1.5,
+          fillColor: "#ffffff",
+          fillOpacity: 0.96
+        }).addTo(map);
+        marker.bindTooltip(point.name, {
+          permanent: true,
+          direction: "right",
+          offset: [8, 0],
+          className: "point-label"
         });
       });
 
@@ -717,72 +1073,75 @@ function renderMapHtml(payload: ExportPdfPayload, width: number, height: number)
 </html>`;
 }
 
+async function renderMapAttempt(payload: ExportPdfPayload, tempDir: string, width: number, height: number, attemptIndex: number) {
+  const mapHtmlPath = path.join(tempDir, `map-render-${attemptIndex}.html`);
+  await fs.writeFile(mapHtmlPath, renderMapHtml(payload, width, height), "utf-8");
+  let mapWindow: BrowserWindow | null = new BrowserWindow({
+    width,
+    height,
+    show: false,
+    useContentSize: true,
+    paintWhenInitiallyHidden: true,
+    backgroundColor: "#ffffff",
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      webSecurity: false,
+      backgroundThrottling: false,
+    },
+  });
+
+  try {
+    const renderGone = new Promise<never>((_resolve, reject) => {
+      mapWindow?.webContents.once("render-process-gone", (_event, details) => {
+        reject(new Error(`rendu interrompu (${details.reason})`));
+      });
+    });
+    await withTimeout(Promise.race([mapWindow.loadFile(mapHtmlPath), renderGone]), 15000, "chargement de la carte trop long");
+    await withTimeout(
+      Promise.race([
+        mapWindow.webContents.executeJavaScript(
+          "new Promise((resolve) => { const started = Date.now(); const timer = setInterval(() => { if (window.__zgegMapReady || Date.now() - started > 9000) { clearInterval(timer); resolve(true); } }, 100); })",
+        ),
+        renderGone,
+      ]),
+      16000,
+      "chargement des tuiles trop long",
+    );
+    const image = await withTimeout(
+      Promise.race([mapWindow.webContents.capturePage({ x: 0, y: 0, width, height }), renderGone]),
+      12000,
+      "capture de la carte trop lourde",
+    );
+    return image.toDataURL();
+  } finally {
+    if (!mapWindow.isDestroyed()) {
+      mapWindow.close();
+    }
+    mapWindow = null;
+  }
+}
+
 async function renderHighResolutionMap(payload: ExportPdfPayload, tempDir: string) {
   const captureRect = normalizeCaptureRect(payload.area.captureRect);
   if (!captureRect) {
     throw new Error("Zone d'export PDF invalide.");
   }
 
-  const scale = 3;
-  const maxDimension = 3200;
-  const minDimension = 600;
-  const ratio = captureRect.width / captureRect.height;
-  let width = Math.round(captureRect.width * scale);
-  let height = Math.round(captureRect.height * scale);
+  const renderSize = streetDetailRenderSize(payload, captureRect);
+  const attempts = fallbackRenderSizes(renderSize, captureRect);
+  let lastError: Error | null = null;
 
-  if (width > maxDimension) {
-    width = maxDimension;
-    height = Math.round(width / ratio);
-  }
-  if (height > maxDimension) {
-    height = maxDimension;
-    width = Math.round(height * ratio);
+  for (let index = 0; index < attempts.length; index += 1) {
+    const attempt = attempts[index];
+    try {
+      return await renderMapAttempt(payload, tempDir, attempt.width, attempt.height, index + 1);
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error("erreur inconnue");
+    }
   }
 
-  if (width < minDimension && height < maxDimension) {
-    width = minDimension;
-    height = Math.round(width / ratio);
-  }
-  if (height < minDimension && width < maxDimension) {
-    height = minDimension;
-    width = Math.round(height * ratio);
-  }
-
-  if (width > maxDimension) {
-    width = maxDimension;
-    height = Math.round(width / ratio);
-  }
-  if (height > maxDimension) {
-    height = maxDimension;
-    width = Math.round(height * ratio);
-  }
-
-  const mapHtmlPath = path.join(tempDir, "map-render.html");
-  await fs.writeFile(mapHtmlPath, renderMapHtml(payload, width, height), "utf-8");
-
-  let mapWindow: BrowserWindow | null = new BrowserWindow({
-    width,
-    height,
-    show: false,
-    useContentSize: true,
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-      webSecurity: false,
-    },
-  });
-
-  try {
-    await mapWindow.loadFile(mapHtmlPath);
-    await mapWindow.webContents.executeJavaScript(
-      "new Promise((resolve) => { const started = Date.now(); const timer = setInterval(() => { if (window.__zgegMapReady || Date.now() - started > 9000) { clearInterval(timer); resolve(true); } }, 100); })",
-    );
-    const image = await mapWindow.webContents.capturePage({ x: 0, y: 0, width, height });
-    return image.toDataURL();
-  } finally {
-    mapWindow.close();
-    mapWindow = null;
-  }
+  throw new Error(`rendu de carte impossible apres reduction automatique (${lastError?.message ?? "erreur inconnue"})`);
 }
 
 async function exportProjectPdf(event: IpcMainInvokeEvent, payload: ExportPdfPayload): Promise<JsonResult> {
@@ -931,6 +1290,13 @@ async function createWindow() {
   } else {
     await mainWindow.loadFile(path.join(appRoot(), "dist", "index.html"));
   }
+
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) {
+      void shell.openExternal(url);
+    }
+    return { action: "deny" };
+  });
 }
 
 ipcMain.handle("project:import-map", async (_event, projectName: string): Promise<JsonResult> => {
@@ -988,6 +1354,11 @@ ipcMain.handle("project:import-map", async (_event, projectName: string): Promis
       name: path.basename(sourcePath, extension),
       originalFilePath: originalPath,
       convertedImagePath,
+      backgroundRemoval: {
+        enabled: false,
+        color: "#000000",
+        tolerance: 16,
+      },
       opacity: 0.65,
       visible: true,
       controlPoints: [],
@@ -1024,7 +1395,8 @@ ipcMain.handle("points:import-csv", async (_event, projectName: string): Promise
   if (parsed.points.length === 0) {
     return {
       success: false,
-      message: "Aucun point valide trouve. Colonnes acceptees : lat/lng ou x/y avec projection optionnelle EPSG:4326, EPSG:3857 ou EPSG:2154.",
+      message:
+        "Aucun point valide trouve. Colonnes acceptees : lat/lng, x/y, xOuvrage/yOuvrage ou xouvl2e/youvl2e avec projection EPSG:4326, EPSG:3857, EPSG:2154 ou EPSG:27572.",
       originalFilePath: originalPath,
       skippedRows: parsed.skippedRows,
     };
@@ -1077,9 +1449,15 @@ ipcMain.handle("project:open", async (): Promise<JsonResult> => {
 
 ipcMain.handle(
   "layer:georeference",
-  async (_event, payload: { projectName: string; layer: { id: string; originalFilePath: string; convertedImagePath?: string; controlPoints: unknown[] } }): Promise<JsonResult> => {
+  async (
+    _event,
+    payload: {
+      projectName: string;
+      layer: { id: string; originalFilePath: string; convertedImagePath?: string; processedImagePath?: string; controlPoints: unknown[] };
+    },
+  ): Promise<JsonResult> => {
     const projectDir = await ensureProjectDirs(payload.projectName);
-    const sourcePath = payload.layer.convertedImagePath || payload.layer.originalFilePath;
+    const sourcePath = payload.layer.processedImagePath || payload.layer.convertedImagePath || payload.layer.originalFilePath;
     const pointsPath = path.join(projectDir, "control_points", `${payload.layer.id}.json`);
     const outputPath = path.join(projectDir, "georeferenced", `${payload.layer.id}.tif`);
 
@@ -1094,6 +1472,35 @@ ipcMain.handle(
       pointsPath,
       "--epsg",
       "EPSG:3857",
+      "--logs",
+      path.join(projectDir, "logs"),
+    ]);
+  },
+);
+
+ipcMain.handle(
+  "layer:remove-background",
+  async (
+    _event,
+    payload: {
+      projectName: string;
+      layer: { id: string; originalFilePath: string; convertedImagePath?: string };
+      color: string;
+      tolerance: number;
+    },
+  ): Promise<JsonResult> => {
+    const projectDir = await ensureProjectDirs(payload.projectName);
+    const sourcePath = payload.layer.convertedImagePath || payload.layer.originalFilePath;
+    const outputPath = path.join(projectDir, "converted", `${payload.layer.id}-transparent.png`);
+    return runPython("remove_background.py", [
+      "--input",
+      sourcePath,
+      "--output",
+      outputPath,
+      "--color",
+      payload.color,
+      "--tolerance",
+      String(payload.tolerance),
       "--logs",
       path.join(projectDir, "logs"),
     ]);
@@ -1128,7 +1535,7 @@ ipcMain.handle(
     }
 
     const projectDir = await ensureProjectDirs(payload.projectName);
-    const overlayPath = path.join(projectDir, "overlays", `${payload.layer.id}.jpg`);
+    const overlayPath = path.join(projectDir, "overlays", `${payload.layer.id}.png`);
     return runPython("generate_overlay.py", [
       "--source",
       payload.layer.georefFilePath,

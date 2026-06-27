@@ -1,6 +1,7 @@
 export type ControlPoint = {
   id: string;
   name: string;
+  comment?: string;
   sourcePixel: {
     x: number;
     y: number;
@@ -11,7 +12,25 @@ export type ControlPoint = {
   };
 };
 
-export type CoordinateProjection = "EPSG:4326" | "EPSG:3857" | "EPSG:2154";
+export type InfoPoint = {
+  id: string;
+  name: string;
+  comment?: string;
+  exportEnabled?: boolean;
+  targetLatLng: {
+    lat: number;
+    lng: number;
+  };
+};
+
+export type CoordinateProjection = "EPSG:4326" | "EPSG:3857" | "EPSG:2154" | "EPSG:27572";
+
+export type BackgroundRemovalSettings = {
+  enabled: boolean;
+  color: string;
+  tolerance: number;
+  processedImagePath?: string;
+};
 
 export type ImportedPoint = {
   id: string;
@@ -21,6 +40,7 @@ export type ImportedPoint = {
     y: number;
   };
   sourceProjection: CoordinateProjection;
+  exportEnabled?: boolean;
   targetLatLng: {
     lat: number;
     lng: number;
@@ -46,6 +66,8 @@ export type MapLayer = {
   name: string;
   originalFilePath: string;
   convertedImagePath?: string;
+  processedImagePath?: string;
+  backgroundRemoval?: BackgroundRemovalSettings;
   georefFilePath?: string;
   overlayImagePath?: string;
   overlayImageUrl?: string;
@@ -71,6 +93,7 @@ export type MapProject = {
   updatedAt: string;
   layers: MapLayer[];
   pointLayers: PointLayer[];
+  infoPoints?: InfoPoint[];
 };
 
 export type BaseMapConfig = {

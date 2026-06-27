@@ -3,6 +3,15 @@ import json
 import shutil
 
 
+def has_pillow():
+    try:
+        import PIL  # noqa: F401
+
+        return True
+    except Exception:
+        return False
+
+
 def main():
     dependencies = {
         "gdal_translate": shutil.which("gdal_translate") is not None,
@@ -10,6 +19,7 @@ def main():
         "gdalwarp": shutil.which("gdalwarp") is not None,
         "gdal2tiles": shutil.which("gdal2tiles") is not None or shutil.which("gdal2tiles.py") is not None,
         "pdftoppm": shutil.which("pdftoppm") is not None,
+        "Pillow": has_pillow(),
     }
 
     print(

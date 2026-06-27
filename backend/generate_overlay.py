@@ -85,6 +85,8 @@ def overlay_size(info, max_size):
 
 def band_args(info):
     bands = info.get("bands", [])
+    if len(bands) >= 4:
+        return ["-b", "1", "-b", "2", "-b", "3", "-b", "4"]
     if len(bands) >= 3:
         return ["-b", "1", "-b", "2", "-b", "3"]
     return []
@@ -124,14 +126,14 @@ def main():
         translate_command = [
             gdal_translate,
             "-of",
-            "JPEG",
+            "PNG",
             "-outsize",
             str(width),
             str(height),
             "-r",
             "bilinear",
             "-co",
-            "QUALITY=88",
+            "ZLEVEL=6",
             *band_args(info),
             str(source_path),
             str(output_path),
