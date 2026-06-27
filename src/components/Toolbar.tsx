@@ -68,7 +68,7 @@ export function Toolbar({
           <SquareDashedMousePointer size={17} aria-hidden="true" />
           Zone PDF
         </button>
-        <button type="button" onClick={onExportPdf} disabled={busy} title="Exporter la zone selectionnee en PDF">
+        <button type="button" onClick={onExportPdf} disabled={busy} title="Preview et export PDF detaille">
           <FileDown size={17} aria-hidden="true" />
           Exporter PDF
         </button>

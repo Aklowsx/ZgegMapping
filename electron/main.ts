@@ -417,6 +417,160 @@ function normalizeCaptureRect(rect: Rectangle): Rectangle | null {
   return { x, y, width, height };
 }
 
+function leafletAssetUrl(relativePath: string) {
+  return pathToFileURL(path.join(appRoot(), "node_modules", "leaflet", "dist", relativePath)).toString();
+}
+
+function renderMapHtml(payload: ExportPdfPayload, width: number, height: number) {
+  const bounds = payload.area.bounds;
+  const visibleLayers = payload.project.layers
+    .filter((layer) => layer.visible && layer.tileUrlTemplate)
+    .map((layer, index) => ({
+      name: layer.name,
+      opacity: layer.opacity,
+      tileUrlTemplate: layer.tileUrlTemplate,
+      zIndex: 200 + index,
+    }));
+
+  return `<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="${leafletAssetUrl("leaflet.css")}" />
+    <style>
+      html,
+      body,
+      #map {
+        width: ${width}px;
+        height: ${height}px;
+        margin: 0;
+        overflow: hidden;
+        background: #ffffff;
+      }
+
+      .leaflet-control-container {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="map"></div>
+    <script src="${leafletAssetUrl("leaflet.js")}"></script>
+    <script>
+      const exportBounds = ${JSON.stringify(bounds)};
+      const overlayLayers = ${JSON.stringify(visibleLayers)};
+      const bounds = L.latLngBounds(
+        [exportBounds.south, exportBounds.west],
+        [exportBounds.north, exportBounds.east]
+      );
+      const map = L.map("map", {
+        zoomControl: false,
+        attributionControl: false,
+        preferCanvas: true,
+        fadeAnimation: false,
+        markerZoomAnimation: false,
+        zoomAnimation: false
+      });
+
+      function waitForLayer(layer) {
+        return new Promise((resolve) => {
+          let done = false;
+          const finish = () => {
+            if (done) {
+              return;
+            }
+            done = true;
+            resolve();
+          };
+          layer.once("load", finish);
+          layer.once("tileerror", finish);
+          window.setTimeout(finish, 6000);
+        });
+      }
+
+      const layers = [];
+      const baseLayer = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 20,
+        crossOrigin: true
+      }).addTo(map);
+      layers.push(baseLayer);
+
+      overlayLayers.forEach((overlay) => {
+        const layer = L.tileLayer(overlay.tileUrlTemplate, {
+          minZoom: 0,
+          maxZoom: 22,
+          tms: false,
+          opacity: overlay.opacity,
+          zIndex: overlay.zIndex
+        }).addTo(map);
+        layers.push(layer);
+      });
+
+      map.fitBounds(bounds, { animate: false, padding: [0, 0] });
+      map.invalidateSize(false);
+
+      Promise.all(layers.map(waitForLayer)).then(() => {
+        window.setTimeout(() => {
+          window.__zgegMapReady = true;
+        }, 250);
+      });
+    </script>
+  </body>
+</html>`;
+}
+
+async function renderHighResolutionMap(payload: ExportPdfPayload, tempDir: string) {
+  const captureRect = normalizeCaptureRect(payload.area.captureRect);
+  if (!captureRect) {
+    throw new Error("Zone d'export PDF invalide.");
+  }
+
+  const scale = 3;
+  const maxDimension = 3200;
+  const ratio = captureRect.width / captureRect.height;
+  let width = Math.round(captureRect.width * scale);
+  let height = Math.round(captureRect.height * scale);
+
+  if (width > maxDimension) {
+    width = maxDimension;
+    height = Math.round(width / ratio);
+  }
+  if (height > maxDimension) {
+    height = maxDimension;
+    width = Math.round(height * ratio);
+  }
+
+  width = Math.max(600, width);
+  height = Math.max(400, height);
+
+  const mapHtmlPath = path.join(tempDir, "map-render.html");
+  await fs.writeFile(mapHtmlPath, renderMapHtml(payload, width, height), "utf-8");
+
+  let mapWindow: BrowserWindow | null = new BrowserWindow({
+    width,
+    height,
+    show: false,
+    useContentSize: true,
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      webSecurity: false,
+    },
+  });
+
+  try {
+    await mapWindow.loadFile(mapHtmlPath);
+    await mapWindow.webContents.executeJavaScript(
+      "new Promise((resolve) => { const started = Date.now(); const timer = setInterval(() => { if (window.__zgegMapReady || Date.now() - started > 9000) { clearInterval(timer); resolve(true); } }, 100); })",
+    );
+    const image = await mapWindow.webContents.capturePage({ x: 0, y: 0, width, height });
+    return image.toDataURL();
+  } finally {
+    mapWindow.close();
+    mapWindow = null;
+  }
+}
+
 async function exportProjectPdf(event: IpcMainInvokeEvent, payload: ExportPdfPayload): Promise<JsonResult> {
   const projectName = sanitizeProjectName(payload.project?.name ?? "default-project");
   const projectDir = await ensureProjectDirs(projectName);
@@ -433,29 +587,24 @@ async function exportProjectPdf(event: IpcMainInvokeEvent, payload: ExportPdfPay
   if (!sourceWindow) {
     return { success: false, message: "Fenetre source introuvable pour l'export PDF." };
   }
-
-  const { canceled, filePath } = await dialog.showSaveDialog(sourceWindow, {
-    title: "Exporter la carte en PDF",
-    defaultPath,
-    filters: [{ name: "PDF", extensions: ["pdf"] }],
-  });
-
-  if (canceled || !filePath) {
-    return { success: false, message: "Export PDF annule." };
+  if (payload.area.mode !== "selection") {
+    return { success: false, message: "Selectionnez une zone PDF avant d'exporter." };
   }
 
-  const image = await event.sender.capturePage(captureRect);
-  const html = renderPdfHtml(payload, image.toDataURL());
   const tempDir = await fs.mkdtemp(path.join(app.getPath("temp"), "zgeg-mapping-export-"));
   const htmlPath = path.join(tempDir, "export.html");
-  let pdfWindow: BrowserWindow | null = null;
+  let previewWindow: BrowserWindow | null = null;
 
   try {
+    const mapImageDataUrl = await renderHighResolutionMap(payload, tempDir);
+    const html = renderPdfHtml(payload, mapImageDataUrl);
     await fs.writeFile(htmlPath, html, "utf-8");
-    pdfWindow = new BrowserWindow({
+
+    previewWindow = new BrowserWindow({
       width: 1000,
       height: 1300,
-      show: false,
+      show: true,
+      title: "Preview PDF - ZgegMapping",
       webPreferences: {
         contextIsolation: true,
         nodeIntegration: false,
@@ -463,19 +612,34 @@ async function exportProjectPdf(event: IpcMainInvokeEvent, payload: ExportPdfPay
       },
     });
 
-    await pdfWindow.loadFile(htmlPath);
-    const pdf = await pdfWindow.webContents.printToPDF({
+    previewWindow.on("closed", () => {
+      void fs.rm(tempDir, { recursive: true, force: true });
+    });
+    await previewWindow.loadFile(htmlPath);
+
+    const { canceled, filePath } = await dialog.showSaveDialog(previewWindow, {
+      title: "Exporter la carte en PDF",
+      defaultPath,
+      filters: [{ name: "PDF", extensions: ["pdf"] }],
+    });
+
+    if (canceled || !filePath) {
+      return { success: false, message: "Preview ouverte. Export PDF annule." };
+    }
+
+    const pdf = await previewWindow.webContents.printToPDF({
       printBackground: true,
+      pageSize: "A4",
       preferCSSPageSize: true,
     });
     await fs.writeFile(filePath, pdf);
-    return { success: true, message: "PDF exporte avec succes.", outputPath: filePath };
+    return { success: true, message: "Preview ouverte et PDF exporte avec succes.", outputPath: filePath };
   } catch (error) {
     const err = error as { message?: string };
+    if (previewWindow === null || previewWindow.isDestroyed()) {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
     return { success: false, message: `Echec de l'export PDF : ${err.message ?? "erreur inconnue"}.` };
-  } finally {
-    pdfWindow?.close();
-    await fs.rm(tempDir, { recursive: true, force: true });
   }
 }
 

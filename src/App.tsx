@@ -364,8 +364,8 @@ export default function App() {
     }
 
     setBusy(true);
-    setStatus("Export PDF de la zone selectionnee...");
-    startProgress("Export PDF", 8000);
+    setStatus("Preparation de la preview PDF detaillee...");
+    startProgress("Preview et export PDF", 18000);
     try {
       const result = await ipcClient.exportPdf({ project, selectedLayerId, area: exportSelectionArea });
       setStatus(result.message);

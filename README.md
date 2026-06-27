@@ -54,7 +54,7 @@ npm start
 9. Activer, masquer, renommer, ordonner et regler l'opacite des couches dans le panneau lateral.
 10. Utiliser `Ctrl+Z` ou `Cmd+Z` sur macOS pour annuler le point en cours ou le dernier point pose.
 11. Activer `Zone PDF` et glisser sur la carte pour definir la zone a exporter.
-12. Cliquer sur `Exporter PDF` pour produire un PDF contenant uniquement la zone selectionnee.
+12. Cliquer sur `Exporter PDF` pour ouvrir une preview du PDF detaille, puis sauvegarder le PDF.
 13. Sauvegarder le projet.
 
 L'application ne devine jamais de coordonnees : les points cible viennent uniquement des clics ou des valeurs saisies par l'utilisateur.

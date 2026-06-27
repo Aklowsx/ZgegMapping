@@ -315,7 +315,7 @@ Ce script verifie la presence des outils suivants dans le `PATH` :
 
 L'application affiche ensuite la liste des dependances manquantes ou confirme que tout est disponible.
 
-### 2.11 Export PDF de zone
+### 2.11 Preview et export PDF detaille
 
 Le bouton `Zone PDF` active un mode de selection sur la carte.
 
@@ -326,13 +326,23 @@ Quand ce mode est actif :
 - l'application memorise l'emprise latitude/longitude de ce rectangle ;
 - l'application memorise aussi la zone exacte a capturer dans la fenetre Electron.
 
-Le bouton `Exporter PDF` genere un PDF contenant uniquement la zone selectionnee.
+Le bouton `Exporter PDF` genere un rendu haute resolution de la zone selectionnee, puis ouvre une preview du PDF detaille.
 
 Si aucune zone n'a ete selectionnee, l'application demande d'abord de definir une zone PDF.
 
-Le PDF ne contient pas de titre, tableau, metadonnees ou informations supplementaires : seulement l'image capturee.
+Le PDF contient :
 
-L'utilisateur choisit le chemin final du PDF avec une boite de dialogue native.
+- une image haute resolution de la zone selectionnee ;
+- le nom du projet ;
+- la date de generation ;
+- la couche active ;
+- le nombre de couches visibles ;
+- l'emprise geographique ;
+- le tableau des couches ;
+- le tableau des points de controle ;
+- les informations du projet.
+
+La preview s'ouvre dans une fenetre Electron separee. L'utilisateur choisit ensuite le chemin final du PDF avec une boite de dialogue native.
 
 Le chemin propose par defaut est :
 
@@ -680,15 +690,18 @@ Le flux inverse fonctionne aussi : carte d'abord, image ensuite.
 4. `MapView` calcule aussi le rectangle de capture dans la fenetre Electron.
 5. L'utilisateur clique sur `Exporter PDF`.
 6. React envoie le projet, la couche selectionnee et la zone d'export a Electron.
-7. Electron ouvre une boite de dialogue de sauvegarde.
-8. Electron capture la zone de carte avec `webContents.capturePage`.
-9. Electron genere une page HTML contenant uniquement cette capture.
-10. Electron imprime cette page avec `webContents.printToPDF`.
-11. Le PDF est ecrit au chemin choisi par l'utilisateur.
+7. Electron ouvre une fenetre Leaflet cachee plus grande que la zone visible.
+8. Electron rend OpenStreetMap et les couches visibles dans cette fenetre haute resolution.
+9. Electron capture ce rendu haute resolution avec `webContents.capturePage`.
+10. Electron genere une page HTML de rapport detaille.
+11. Electron ouvre cette page dans une fenetre de preview.
+12. Electron ouvre une boite de dialogue de sauvegarde.
+13. Electron imprime la preview avec `webContents.printToPDF`.
+14. Le PDF est ecrit au chemin choisi par l'utilisateur.
 
 ## 6. Export actuel
 
-Le projet propose maintenant un export PDF de la zone selectionnee sur la carte.
+Le projet propose maintenant une preview et un export PDF detaille de la zone selectionnee sur la carte.
 
 Les sorties actuelles sont :
 
@@ -710,7 +723,7 @@ projects/<nom_projet>/tiles/<layer-id>/<z>/<x>/<y>.png
 projects/<nom_projet>/project.json
 ```
 
-4. le PDF de zone :
+4. le PDF detaille :
 
 ```text
 projects/<nom_projet>/exports/<nom_projet>-export-<date>.pdf
@@ -720,7 +733,7 @@ Le GeoTIFF peut etre reutilise dans un SIG comme QGIS.
 
 Les tuiles peuvent etre reutilisees dans une application web Leaflet si le dossier est servi correctement.
 
-Le PDF sert de document de consultation et de partage. Il contient uniquement la capture de la zone selectionnee et n'est pas un format SIG georeference.
+Le PDF sert de document de consultation et de partage. Il inclut un rendu haute resolution de la zone selectionnee et des informations de projet, mais ce n'est pas un format SIG georeference.
 
 ## 7. Limitations actuelles
 
@@ -755,7 +768,7 @@ Il n'y a pas encore d'interface avancee pour choisir :
 
 ### 7.4 Export final
 
-L'export PDF de zone existe, mais il n'y a pas encore :
+L'export PDF detaille existe, mais il n'y a pas encore :
 
 - d'export PNG/JPEG de la composition visible ;
 - d'export MBTiles ;
