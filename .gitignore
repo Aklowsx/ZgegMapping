@@ -1,0 +1,7 @@
+node_modules/
+dist/
+dist-electron/
+__pycache__/
+*.pyc
+projects/*/
+!projects/.gitkeep
