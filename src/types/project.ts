@@ -32,6 +32,15 @@ export type MapProject = {
   layers: MapLayer[];
 };
 
+export type BaseMapConfig = {
+  id: string;
+  name: string;
+  urlTemplate: string;
+  attribution: string;
+  maxZoom: number;
+  className?: string;
+};
+
 export type ExportMapArea = {
   mode: "selection" | "viewport";
   bounds: {

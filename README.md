@@ -1,6 +1,6 @@
 # ZgegMapping
 
-Application desktop locale pour importer des cartes JPEG, PNG, TIFF ou PDF, poser des points de controle, georeferencer les images avec GDAL, generer des tuiles locales, les afficher en surcouche Leaflet sur un fond OpenStreetMap et exporter une zone selectionnee en PDF.
+Application desktop locale pour importer des cartes JPEG, PNG, TIFF ou PDF, poser des points de controle, georeferencer les images avec GDAL, generer des tuiles locales, les afficher en surcouche Leaflet sur un fond de carte configurable et exporter une zone selectionnee en PDF.
 
 ## Stack
 
@@ -44,24 +44,29 @@ npm start
 ## Workflow MVP
 
 1. Importer une carte image ou PDF.
-2. Naviguer dans l'image source et le fond OpenStreetMap avec la molette et le clic gauche maintenu.
-3. Si plusieurs cartes sont importees, choisir la carte active depuis le menu deroulant du panneau gauche.
-4. Cliquer sur un point identifiable de l'image source.
-5. Cliquer sur le point correspondant sur le fond OpenStreetMap.
-6. Repeter avec au moins 3 points. Utiliser 6 a 10 points pour une carte ancienne, scannee ou deformee.
-7. Cliquer sur `Georeferencer la carte`.
-8. Cliquer sur `Generer les tuiles`.
-9. Activer, masquer, renommer, ordonner et regler l'opacite des couches dans le panneau lateral.
-10. Utiliser `Ctrl+Z` ou `Cmd+Z` sur macOS pour annuler le point en cours ou le dernier point pose.
-11. Activer `Zone PDF` et glisser sur la carte pour definir la zone a exporter.
-12. Cliquer sur `Exporter PDF` pour ouvrir une preview du PDF detaille, puis sauvegarder le PDF.
-13. Sauvegarder le projet.
+2. Choisir le fond de carte dans le selecteur `Fond`.
+3. Naviguer dans l'image source et le fond de carte avec la molette et le clic gauche maintenu.
+4. Si plusieurs cartes sont importees, choisir la carte active depuis le menu deroulant du panneau gauche.
+5. Cliquer sur un point identifiable de l'image source.
+6. Cliquer sur le point correspondant sur le fond de carte.
+7. Repeter avec au moins 3 points. Utiliser 6 a 10 points pour une carte ancienne, scannee ou deformee.
+8. Cliquer sur `Georeferencer la carte`.
+9. Cliquer sur `Generer les tuiles`.
+10. Activer, masquer, renommer, ordonner et regler l'opacite des couches dans le panneau lateral.
+11. Utiliser `Ctrl+Z` ou `Cmd+Z` sur macOS pour annuler le point en cours ou le dernier point pose.
+12. Activer `Zone PDF` et glisser sur la carte pour definir la zone a exporter.
+13. Cliquer sur `Exporter PDF` pour ouvrir une preview globale, puis sauvegarder un PDF haute resolution contenant uniquement la zone selectionnee.
+14. Sauvegarder le projet.
 
 L'application ne devine jamais de coordonnees : les points cible viennent uniquement des clics ou des valeurs saisies par l'utilisateur.
 
 Les actions longues affichent une barre de suivi dans la barre de statut avec un temps restant estime.
 
 Le bouton `Jour` / `Nuit` permet de basculer entre le theme clair et le theme sombre.
+
+Le selecteur `Fond` propose CARTO Voyager, CARTO Clair, un fond sombre avec rues jaunes et OpenStreetMap. Le choix et l'opacite du fond sont conserves localement et appliques aussi a l'export PDF.
+
+Pour les actions longues pilotees par GDAL, comme l'import, le georeferencement, la generation des tuiles et l'export PDF, l'application affiche le temps ecoule plutot qu'une estimation fragile du temps restant.
 
 ## Structure des donnees
 
@@ -79,7 +84,7 @@ projects/<nom_projet>/
 `-- project.json
 ```
 
-Les donnees restent locales. Le fond OpenStreetMap utilise les tuiles publiques OSM tant qu'aucun fond local n'est configure.
+Les donnees du projet restent locales. Les fonds de carte utilisent des tuiles publiques externes selon le fond selectionne.
 
 ## Scripts Python
 

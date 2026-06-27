@@ -1,11 +1,17 @@
 import { FileDown, FolderOpen, Import, Layers, MapPinned, Moon, Save, Settings2, SquareDashedMousePointer, Sun } from "lucide-react";
+import type { BaseMapConfig } from "../types/project";
 
 type ToolbarProps = {
   busy: boolean;
   projectName: string;
   exportSelectionEnabled: boolean;
   theme: "day" | "night";
+  baseMaps: BaseMapConfig[];
+  baseMapId: string;
+  baseMapOpacity: number;
   onProjectNameChange(name: string): void;
+  onBaseMapChange(baseMapId: string): void;
+  onBaseMapOpacityChange(opacity: number): void;
   onImport(): void;
   onSave(): void;
   onOpen(): void;
@@ -22,7 +28,12 @@ export function Toolbar({
   projectName,
   exportSelectionEnabled,
   theme,
+  baseMaps,
+  baseMapId,
+  baseMapOpacity,
   onProjectNameChange,
+  onBaseMapChange,
+  onBaseMapOpacityChange,
   onImport,
   onSave,
   onOpen,
@@ -43,6 +54,31 @@ export function Toolbar({
       <label className="project-name">
         <span>Projet</span>
         <input value={projectName} onChange={(event) => onProjectNameChange(event.target.value)} />
+      </label>
+
+      <label className="toolbar-select">
+        <span>Fond</span>
+        <select value={baseMapId} onChange={(event) => onBaseMapChange(event.target.value)} disabled={busy}>
+          {baseMaps.map((baseMap) => (
+            <option key={baseMap.id} value={baseMap.id}>
+              {baseMap.name}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      <label className="toolbar-opacity">
+        <span>Opacite fond</span>
+        <input
+          type="range"
+          min="0.15"
+          max="1"
+          step="0.05"
+          value={baseMapOpacity}
+          onChange={(event) => onBaseMapOpacityChange(Number(event.target.value))}
+          disabled={busy}
+        />
+        <strong>{Math.round(baseMapOpacity * 100)}%</strong>
       </label>
 
       <div className="toolbar-actions">

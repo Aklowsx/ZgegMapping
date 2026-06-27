@@ -1,10 +1,12 @@
 import L from "leaflet";
 import { useEffect, useRef } from "react";
-import type { ControlPoint, ExportMapArea, MapLayer } from "../types/project";
+import type { BaseMapConfig, ControlPoint, ExportMapArea, MapLayer } from "../types/project";
 import { controlPointBounds } from "../utils/leafletHelpers";
 
 type MapViewProps = {
   layers: MapLayer[];
+  baseMap: BaseMapConfig;
+  baseMapOpacity: number;
   selectedLayerId: string | null;
   draftPoint?: ControlPoint["targetLatLng"];
   focusLayerRequest: { layerId: string; nonce: number } | null;
@@ -16,6 +18,8 @@ type MapViewProps = {
 
 export function MapView({
   layers,
+  baseMap,
+  baseMapOpacity,
   selectedLayerId,
   draftPoint,
   focusLayerRequest,
@@ -26,6 +30,7 @@ export function MapView({
 }: MapViewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
+  const baseLayerRef = useRef<L.TileLayer | null>(null);
   const overlaysRef = useRef<Map<string, L.TileLayer>>(new Map());
   const markersRef = useRef<L.LayerGroup | null>(null);
   const exportSelectionEnabledRef = useRef(exportSelectionEnabled);
@@ -111,11 +116,6 @@ export function MapView({
       preferCanvas: true,
     });
 
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      maxZoom: 20,
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-    }).addTo(map);
-
     markersRef.current = L.layerGroup().addTo(map);
     map.on("click", (event: L.LeafletMouseEvent) => {
       if (exportSelectionEnabledRef.current) {
@@ -134,10 +134,40 @@ export function MapView({
     return () => {
       map.remove();
       mapRef.current = null;
+      baseLayerRef.current = null;
       overlaysRef.current.clear();
       markersRef.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) {
+      return;
+    }
+
+    const baseLayer = L.tileLayer(baseMap.urlTemplate, {
+      maxZoom: baseMap.maxZoom,
+      attribution: baseMap.attribution,
+      className: baseMap.className,
+      opacity: baseMapOpacity,
+      zIndex: 0,
+    }).addTo(map);
+
+    baseLayerRef.current = baseLayer;
+    publishViewportArea();
+
+    return () => {
+      baseLayer.removeFrom(map);
+      if (baseLayerRef.current === baseLayer) {
+        baseLayerRef.current = null;
+      }
+    };
+  }, [baseMap]);
+
+  useEffect(() => {
+    baseLayerRef.current?.setOpacity(baseMapOpacity);
+  }, [baseMapOpacity]);
 
   useEffect(() => {
     if (!containerRef.current) {
@@ -329,8 +359,8 @@ export function MapView({
   return (
     <div className="map-view">
       <div className="pane-header map-header">
-        <h2>Fond OpenStreetMap</h2>
-        <span>{exportSelectionEnabled ? "Glissez pour definir la zone PDF" : "Cliquez pour placer le point cible"}</span>
+        <h2>Fond {baseMap.name}</h2>
+        <span>{exportSelectionEnabled ? "Glissez pour definir la zone PDF" : `Opacite ${Math.round(baseMapOpacity * 100)}%`}</span>
       </div>
       <div className="leaflet-host" ref={containerRef} />
     </div>

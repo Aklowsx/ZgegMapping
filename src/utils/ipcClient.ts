@@ -1,4 +1,4 @@
-import type { ExportMapArea, MapLayer, MapProject, OperationResult } from "../types/project";
+import type { BaseMapConfig, ExportMapArea, MapLayer, MapProject, OperationResult } from "../types/project";
 
 type ImportResult = OperationResult<{ layer?: MapLayer; originalFilePath?: string }>;
 type SaveResult = OperationResult<{ projectPath?: string }>;
@@ -16,7 +16,13 @@ declare global {
       openProject(): Promise<OpenResult>;
       georeferenceLayer(payload: { projectName: string; layer: MapLayer }): Promise<GeorefResult>;
       generateTiles(payload: { projectName: string; layer: MapLayer }): Promise<TilesResult>;
-      exportPdf(payload: { project: MapProject; selectedLayerId: string | null; area: ExportMapArea }): Promise<ExportPdfResult>;
+      exportPdf(payload: {
+        project: MapProject;
+        selectedLayerId: string | null;
+        area: ExportMapArea;
+        baseMap: BaseMapConfig;
+        baseMapOpacity: number;
+      }): Promise<ExportPdfResult>;
       checkDependencies(): Promise<DependencyResult>;
     };
   }

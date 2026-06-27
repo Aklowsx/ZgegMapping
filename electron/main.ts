@@ -64,10 +64,21 @@ type ExportMapArea = {
   captureRect: Rectangle;
 };
 
+type PdfBaseMap = {
+  id: string;
+  name: string;
+  urlTemplate: string;
+  attribution: string;
+  maxZoom: number;
+  className?: string;
+};
+
 type ExportPdfPayload = {
   project: PdfProject;
   selectedLayerId: string | null;
   area: ExportMapArea;
+  baseMap: PdfBaseMap;
+  baseMapOpacity?: number;
 };
 
 const imageExtensions = new Set([".jpg", ".jpeg", ".png", ".tif", ".tiff"]);
@@ -109,68 +120,9 @@ function escapeHtml(value: unknown) {
     .replace(/'/g, "&#039;");
 }
 
-function formatDate(value: string) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value || "Non renseigne";
-  }
-
-  return date.toLocaleString("fr-FR", {
-    dateStyle: "medium",
-    timeStyle: "short",
-  });
-}
-
-function formatNumber(value: number) {
-  return Number.isFinite(value) ? value.toFixed(7) : "Non renseigne";
-}
-
-function layerStatus(layer: PdfLayer) {
-  const flags = [
-    layer.visible ? "visible" : "masquee",
-    layer.georefFilePath ? "GeoTIFF" : "non georef.",
-    layer.tileUrlTemplate ? "tuiles" : "sans tuiles",
-  ];
-  return flags.join(" / ");
-}
-
 function renderPdfHtml(payload: ExportPdfPayload, mapImageDataUrl: string) {
-  const { project, selectedLayerId, area } = payload;
-  const generatedAt = new Date();
-  const selectedLayer = project.layers.find((layer) => layer.id === selectedLayerId);
-  const visibleLayers = project.layers.filter((layer) => layer.visible);
-  const layersRows = project.layers
-    .map(
-      (layer, index) => `
-        <tr>
-          <td>${index + 1}</td>
-          <td>${escapeHtml(layer.name)}</td>
-          <td>${escapeHtml(layerStatus(layer))}</td>
-          <td>${Math.round(Number(layer.opacity ?? 0) * 100)}%</td>
-          <td>${layer.controlPoints.length}</td>
-          <td>${escapeHtml(layer.georefFilePath || "-")}</td>
-          <td>${escapeHtml(layer.tilesPath || "-")}</td>
-        </tr>
-      `,
-    )
-    .join("");
-
-  const pointsRows = project.layers
-    .flatMap((layer) =>
-      layer.controlPoints.map(
-        (point) => `
-          <tr>
-            <td>${escapeHtml(layer.name)}</td>
-            <td>${escapeHtml(point.name)}</td>
-            <td>${Number(point.sourcePixel.x).toFixed(0)}</td>
-            <td>${Number(point.sourcePixel.y).toFixed(0)}</td>
-            <td>${formatNumber(point.targetLatLng.lat)}</td>
-            <td>${formatNumber(point.targetLatLng.lng)}</td>
-          </tr>
-        `,
-      ),
-    )
-    .join("");
+  const cssWidth = Math.max(1, Math.round(payload.area.captureRect.width));
+  const cssHeight = Math.max(1, Math.round(payload.area.captureRect.height));
 
   return `<!doctype html>
 <html lang="fr">
@@ -179,227 +131,64 @@ function renderPdfHtml(payload: ExportPdfPayload, mapImageDataUrl: string) {
     <title>Export PDF - ${escapeHtml(payload.project.name)}</title>
     <style>
       @page {
-        size: A4;
-        margin: 13mm;
-      }
-
-      * {
-        box-sizing: border-box;
-      }
-
-      body {
+        size: ${cssWidth}px ${cssHeight}px;
         margin: 0;
-        color: #17202a;
-        font-family: Arial, Helvetica, sans-serif;
-        font-size: 11px;
-        line-height: 1.42;
+      }
+
+      html,
+      body {
+        width: ${cssWidth}px;
+        height: ${cssHeight}px;
+        margin: 0;
+        overflow: hidden;
         background: #ffffff;
       }
 
-      h1,
-      h2,
-      p {
-        margin-top: 0;
-      }
-
-      h1 {
-        margin-bottom: 5px;
-        font-size: 24px;
-        color: #102033;
-      }
-
-      h2 {
-        margin: 20px 0 9px;
-        padding-bottom: 5px;
-        border-bottom: 1px solid #c9d1dc;
-        font-size: 15px;
-        color: #102033;
-      }
-
-      .subtitle,
-      .note {
-        color: #526174;
-        font-size: 12px;
-      }
-
-      .summary {
-        display: grid;
-        grid-template-columns: repeat(4, 1fr);
-        gap: 8px;
-        margin: 16px 0;
-      }
-
-      .summary div {
-        min-height: 58px;
-        padding: 8px;
-        border: 1px solid #d7dde6;
-        border-radius: 6px;
-        background: #f8fafc;
-      }
-
-      .label {
+      img {
+        width: ${cssWidth}px;
+        height: ${cssHeight}px;
         display: block;
-        margin-bottom: 3px;
-        color: #617083;
-        font-size: 9px;
-        font-weight: 700;
-        text-transform: uppercase;
-      }
-
-      .value {
-        overflow-wrap: anywhere;
-        color: #17202a;
-        font-weight: 700;
-      }
-
-      .map-frame {
-        padding: 7px;
-        border: 1px solid #c9d1dc;
-        border-radius: 6px;
-        background: #ffffff;
-      }
-
-      .map-frame img {
-        width: 100%;
-        max-height: 430px;
-        object-fit: contain;
-        display: block;
-      }
-
-      table {
-        width: 100%;
-        border-collapse: collapse;
-        table-layout: fixed;
-        page-break-inside: auto;
-      }
-
-      th,
-      td {
-        padding: 5px 6px;
-        border: 1px solid #d7dde6;
-        vertical-align: top;
-        overflow-wrap: anywhere;
-      }
-
-      th {
-        background: #eef2f6;
-        color: #405066;
-        font-size: 9px;
-        text-align: left;
-        text-transform: uppercase;
-      }
-
-      tr {
-        page-break-inside: avoid;
-      }
-
-      .footer {
-        margin-top: 24px;
-        padding-top: 8px;
-        border-top: 1px solid #d7dde6;
-        color: #617083;
-        font-size: 9px;
       }
     </style>
   </head>
   <body>
-    <h1>${escapeHtml(project.name)}</h1>
-    <p class="subtitle">Export PDF detaille genere le ${escapeHtml(formatDate(generatedAt.toISOString()))}</p>
+    <img src="${mapImageDataUrl}" alt="Zone selectionnee haute resolution" />
+  </body>
+</html>`;
+}
 
-    <section class="summary">
-      <div>
-        <span class="label">Mode d'export</span>
-        <span class="value">Zone selectionnee</span>
-      </div>
-      <div>
-        <span class="label">Couche active</span>
-        <span class="value">${escapeHtml(selectedLayer?.name || "Aucune")}</span>
-      </div>
-      <div>
-        <span class="label">Couches visibles</span>
-        <span class="value">${visibleLayers.length} / ${project.layers.length}</span>
-      </div>
-      <div>
-        <span class="label">Zoom source</span>
-        <span class="value">${area.zoom}</span>
-      </div>
-    </section>
+function renderPreviewHtml(payload: ExportPdfPayload, mapImageDataUrl: string) {
+  return `<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <title>Preview PDF - ${escapeHtml(payload.project.name)}</title>
+    <style>
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+        background: #111827;
+      }
 
-    <h2>Carte exportee</h2>
-    <div class="map-frame">
-      <img src="${mapImageDataUrl}" alt="Carte exportee haute resolution" />
-    </div>
-    <p class="note">Cette image est rendue en haute resolution a partir de l'emprise selectionnee, puis integree au PDF.</p>
+      body {
+        display: grid;
+        place-items: center;
+      }
 
-    <h2>Emprise geographique</h2>
-    <table>
-      <thead>
-        <tr>
-          <th>Nord</th>
-          <th>Sud</th>
-          <th>Ouest</th>
-          <th>Est</th>
-          <th>Centre lat.</th>
-          <th>Centre lng.</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td>${formatNumber(area.bounds.north)}</td>
-          <td>${formatNumber(area.bounds.south)}</td>
-          <td>${formatNumber(area.bounds.west)}</td>
-          <td>${formatNumber(area.bounds.east)}</td>
-          <td>${formatNumber(area.center.lat)}</td>
-          <td>${formatNumber(area.center.lng)}</td>
-        </tr>
-      </tbody>
-    </table>
-
-    <h2>Couches du projet</h2>
-    <table>
-      <thead>
-        <tr>
-          <th style="width: 34px;">Ordre</th>
-          <th>Nom</th>
-          <th>Etat</th>
-          <th style="width: 58px;">Opacite</th>
-          <th style="width: 58px;">Points</th>
-          <th>GeoTIFF</th>
-          <th>Tuiles</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${layersRows || '<tr><td colspan="7">Aucune couche dans le projet.</td></tr>'}
-      </tbody>
-    </table>
-
-    <h2>Points de controle</h2>
-    <table>
-      <thead>
-        <tr>
-          <th>Couche</th>
-          <th>Point</th>
-          <th>Pixel X</th>
-          <th>Pixel Y</th>
-          <th>Latitude</th>
-          <th>Longitude</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${pointsRows || '<tr><td colspan="6">Aucun point de controle dans le projet.</td></tr>'}
-      </tbody>
-    </table>
-
-    <h2>Informations projet</h2>
-    <table>
-      <tbody>
-        <tr><th>Identifiant</th><td>${escapeHtml(project.id)}</td></tr>
-        <tr><th>Cree le</th><td>${escapeHtml(formatDate(project.createdAt))}</td></tr>
-        <tr><th>Modifie le</th><td>${escapeHtml(formatDate(project.updatedAt))}</td></tr>
-      </tbody>
-    </table>
-
-    <p class="footer">Document genere localement par ZgegMapping. Les fonds OpenStreetMap restent soumis a leurs conditions d'utilisation et d'attribution.</p>
+      img {
+        max-width: 100vw;
+        max-height: 100vh;
+        object-fit: contain;
+        display: block;
+        background: #ffffff;
+      }
+    </style>
+  </head>
+  <body>
+    <img src="${mapImageDataUrl}" alt="Apercu global de la zone selectionnee" />
   </body>
 </html>`;
 }
@@ -423,6 +212,14 @@ function leafletAssetUrl(relativePath: string) {
 
 function renderMapHtml(payload: ExportPdfPayload, width: number, height: number) {
   const bounds = payload.area.bounds;
+  const baseMap = payload.baseMap ?? {
+    id: "osm",
+    name: "OpenStreetMap",
+    urlTemplate: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+    attribution: "",
+    maxZoom: 20,
+  };
+  const baseMapOpacity = Math.min(1, Math.max(0.15, Number(payload.baseMapOpacity ?? 1)));
   const visibleLayers = payload.project.layers
     .filter((layer) => layer.visible && layer.tileUrlTemplate)
     .map((layer, index) => ({
@@ -450,6 +247,10 @@ function renderMapHtml(payload: ExportPdfPayload, width: number, height: number)
 
       .leaflet-control-container {
         display: none;
+      }
+
+      .basemap-dark-yellow {
+        filter: sepia(1) saturate(5.2) hue-rotate(4deg) brightness(1.18) contrast(1.08);
       }
     </style>
   </head>
@@ -489,8 +290,11 @@ function renderMapHtml(payload: ExportPdfPayload, width: number, height: number)
       }
 
       const layers = [];
-      const baseLayer = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        maxZoom: 20,
+      const baseMap = ${JSON.stringify(baseMap)};
+      const baseLayer = L.tileLayer(baseMap.urlTemplate, {
+        maxZoom: baseMap.maxZoom || 20,
+        opacity: ${baseMapOpacity},
+        className: baseMap.className,
         crossOrigin: true
       }).addTo(map);
       layers.push(baseLayer);
@@ -527,6 +331,7 @@ async function renderHighResolutionMap(payload: ExportPdfPayload, tempDir: strin
 
   const scale = 3;
   const maxDimension = 3200;
+  const minDimension = 600;
   const ratio = captureRect.width / captureRect.height;
   let width = Math.round(captureRect.width * scale);
   let height = Math.round(captureRect.height * scale);
@@ -540,8 +345,23 @@ async function renderHighResolutionMap(payload: ExportPdfPayload, tempDir: strin
     width = Math.round(height * ratio);
   }
 
-  width = Math.max(600, width);
-  height = Math.max(400, height);
+  if (width < minDimension && height < maxDimension) {
+    width = minDimension;
+    height = Math.round(width / ratio);
+  }
+  if (height < minDimension && width < maxDimension) {
+    height = minDimension;
+    width = Math.round(height * ratio);
+  }
+
+  if (width > maxDimension) {
+    width = maxDimension;
+    height = Math.round(width / ratio);
+  }
+  if (height > maxDimension) {
+    height = maxDimension;
+    width = Math.round(height * ratio);
+  }
 
   const mapHtmlPath = path.join(tempDir, "map-render.html");
   await fs.writeFile(mapHtmlPath, renderMapHtml(payload, width, height), "utf-8");
@@ -592,17 +412,19 @@ async function exportProjectPdf(event: IpcMainInvokeEvent, payload: ExportPdfPay
   }
 
   const tempDir = await fs.mkdtemp(path.join(app.getPath("temp"), "zgeg-mapping-export-"));
-  const htmlPath = path.join(tempDir, "export.html");
+  const previewHtmlPath = path.join(tempDir, "preview.html");
+  const pdfHtmlPath = path.join(tempDir, "export.html");
   let previewWindow: BrowserWindow | null = null;
+  let pdfWindow: BrowserWindow | null = null;
 
   try {
     const mapImageDataUrl = await renderHighResolutionMap(payload, tempDir);
-    const html = renderPdfHtml(payload, mapImageDataUrl);
-    await fs.writeFile(htmlPath, html, "utf-8");
+    await fs.writeFile(previewHtmlPath, renderPreviewHtml(payload, mapImageDataUrl), "utf-8");
+    await fs.writeFile(pdfHtmlPath, renderPdfHtml(payload, mapImageDataUrl), "utf-8");
 
     previewWindow = new BrowserWindow({
       width: 1000,
-      height: 1300,
+      height: 760,
       show: true,
       title: "Preview PDF - ZgegMapping",
       webPreferences: {
@@ -615,7 +437,7 @@ async function exportProjectPdf(event: IpcMainInvokeEvent, payload: ExportPdfPay
     previewWindow.on("closed", () => {
       void fs.rm(tempDir, { recursive: true, force: true });
     });
-    await previewWindow.loadFile(htmlPath);
+    await previewWindow.loadFile(previewHtmlPath);
 
     const { canceled, filePath } = await dialog.showSaveDialog(previewWindow, {
       title: "Exporter la carte en PDF",
@@ -627,9 +449,20 @@ async function exportProjectPdf(event: IpcMainInvokeEvent, payload: ExportPdfPay
       return { success: false, message: "Preview ouverte. Export PDF annule." };
     }
 
-    const pdf = await previewWindow.webContents.printToPDF({
+    pdfWindow = new BrowserWindow({
+      width: captureRect.width,
+      height: captureRect.height,
+      show: false,
+      useContentSize: true,
+      webPreferences: {
+        contextIsolation: true,
+        nodeIntegration: false,
+        webSecurity: false,
+      },
+    });
+    await pdfWindow.loadFile(pdfHtmlPath);
+    const pdf = await pdfWindow.webContents.printToPDF({
       printBackground: true,
-      pageSize: "A4",
       preferCSSPageSize: true,
     });
     await fs.writeFile(filePath, pdf);
@@ -640,6 +473,8 @@ async function exportProjectPdf(event: IpcMainInvokeEvent, payload: ExportPdfPay
       await fs.rm(tempDir, { recursive: true, force: true });
     }
     return { success: false, message: `Echec de l'export PDF : ${err.message ?? "erreur inconnue"}.` };
+  } finally {
+    pdfWindow?.close();
   }
 }
 

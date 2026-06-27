@@ -168,6 +168,41 @@ select {
   font-size: 13px;
 }
 
+.toolbar-select {
+  width: 220px;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted-strong);
+  font-size: 13px;
+}
+
+.toolbar-select select {
+  min-width: 0;
+}
+
+.toolbar-opacity {
+  width: 210px;
+  display: grid;
+  grid-template-columns: auto minmax(70px, 1fr) 42px;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted-strong);
+  font-size: 13px;
+}
+
+.toolbar-opacity input {
+  min-height: auto;
+  padding: 0;
+}
+
+.toolbar-opacity strong {
+  color: var(--muted-strong);
+  font-size: 12px;
+  text-align: right;
+}
+
 .toolbar-actions {
   display: flex;
   align-items: center;
@@ -189,6 +224,27 @@ select {
   min-height: 0;
   display: grid;
   background: var(--workspace-bg);
+  position: relative;
+}
+
+.progress-overlay {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  z-index: 1200;
+  width: min(560px, calc(100% - 32px));
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.progress-overlay-panel {
+  padding: 12px 14px;
+  border: 1px solid var(--strong-border);
+  border-radius: 8px;
+  background: var(--panel-bg);
+  box-shadow: 0 12px 30px rgb(15 23 42 / 20%);
+  display: grid;
+  gap: 8px;
 }
 
 .resize-handle {
@@ -372,6 +428,10 @@ select {
 .leaflet-host {
   height: 100%;
   min-height: 0;
+}
+
+.basemap-dark-yellow {
+  filter: sepia(1) saturate(5.2) hue-rotate(4deg) brightness(1.18) contrast(1.08);
 }
 
 .leaflet-host.is-export-selecting {
@@ -592,6 +652,22 @@ select {
   border-radius: inherit;
   background: var(--progress-fill);
   transition: width 0.3s ease;
+}
+
+.progress-track.is-elapsed .progress-fill {
+  width: 42%;
+  animation: progress-scan 1.35s ease-in-out infinite;
+  transition: none;
+}
+
+@keyframes progress-scan {
+  0% {
+    transform: translateX(-110%);
+  }
+
+  100% {
+    transform: translateX(250%);
+  }
 }
 
 @media (max-width: 1260px) {

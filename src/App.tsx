@@ -6,6 +6,7 @@ import { MapView } from "./components/MapView";
 import { SourceImageView } from "./components/SourceImageView";
 import { Toolbar } from "./components/Toolbar";
 import type { ControlPoint, ExportMapArea, MapLayer, MapProject } from "./types/project";
+import { BASE_MAPS, DEFAULT_BASE_MAP_ID, getBaseMap } from "./utils/baseMaps";
 import { ipcClient } from "./utils/ipcClient";
 import { createEmptyProject, touchProject } from "./utils/projectStore";
 
@@ -17,8 +18,10 @@ type DraftPoint = {
 type OperationProgress = {
   label: string;
   value: number;
-  etaSeconds: number;
-  estimatedMs: number;
+  mode: "estimated" | "elapsed" | "complete";
+  etaSeconds: number | null;
+  elapsedSeconds: number;
+  estimatedMs?: number;
   startedAt: number;
 };
 
@@ -27,6 +30,11 @@ type ThemeMode = "day" | "night";
 export default function App() {
   const [project, setProject] = useState<MapProject>(() => createEmptyProject());
   const [theme, setTheme] = useState<ThemeMode>(() => (localStorage.getItem("zgeg-theme") === "night" ? "night" : "day"));
+  const [baseMapId, setBaseMapId] = useState(() => localStorage.getItem("zgeg-basemap") ?? DEFAULT_BASE_MAP_ID);
+  const [baseMapOpacity, setBaseMapOpacity] = useState(() => {
+    const storedOpacity = Number(localStorage.getItem("zgeg-basemap-opacity"));
+    return Number.isFinite(storedOpacity) ? Math.min(1, Math.max(0.15, storedOpacity)) : 1;
+  });
   const [selectedLayerId, setSelectedLayerId] = useState<string | null>(null);
   const [draftPoint, setDraftPoint] = useState<DraftPoint>({});
   const [status, setStatus] = useState("Pret.");
@@ -45,10 +53,19 @@ export default function App() {
     () => project.layers.find((layer) => layer.id === selectedLayerId),
     [project.layers, selectedLayerId],
   );
+  const baseMap = useMemo(() => getBaseMap(baseMapId), [baseMapId]);
 
   useEffect(() => {
     localStorage.setItem("zgeg-theme", theme);
   }, [theme]);
+
+  useEffect(() => {
+    localStorage.setItem("zgeg-basemap", baseMap.id);
+  }, [baseMap.id]);
+
+  useEffect(() => {
+    localStorage.setItem("zgeg-basemap-opacity", String(baseMapOpacity));
+  }, [baseMapOpacity]);
 
   useEffect(() => {
     function handleMouseMove(event: MouseEvent) {
@@ -181,6 +198,8 @@ export default function App() {
       estimatedMs,
       startedAt,
       value: 3,
+      mode: "estimated",
+      elapsedSeconds: 0,
       etaSeconds: Math.ceil(estimatedMs / 1000),
     });
 
@@ -196,18 +215,63 @@ export default function App() {
         estimatedMs,
         startedAt,
         value,
+        mode: "estimated",
+        elapsedSeconds: Math.floor(elapsed / 1000),
         etaSeconds,
+      });
+    }, 500);
+  }
+
+  function startElapsedProgress(label: string) {
+    clearProgressTimers();
+    const startedAt = Date.now();
+    setOperationProgress({
+      label,
+      startedAt,
+      value: 0,
+      mode: "elapsed",
+      elapsedSeconds: 0,
+      etaSeconds: null,
+    });
+
+    progressTimerRef.current = window.setInterval(() => {
+      const elapsed = Date.now() - startedAt;
+      setOperationProgress({
+        label,
+        startedAt,
+        value: 0,
+        mode: "elapsed",
+        elapsedSeconds: Math.floor(elapsed / 1000),
+        etaSeconds: null,
       });
     }, 500);
   }
 
   function completeProgress() {
     clearProgressTimers();
-    setOperationProgress((current) => (current ? { ...current, value: 100, etaSeconds: 0 } : null));
+    setOperationProgress((current) => (current ? { ...current, value: 100, mode: "complete", etaSeconds: 0 } : null));
     progressClearTimeoutRef.current = window.setTimeout(() => {
       setOperationProgress(null);
       progressClearTimeoutRef.current = null;
     }, 900);
+  }
+
+  function formatDuration(totalSeconds: number) {
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return minutes > 0 ? `${minutes}min ${seconds.toString().padStart(2, "0")}s` : `${seconds}s`;
+  }
+
+  function progressMessage(progress: OperationProgress) {
+    if (progress.mode === "complete") {
+      return "Termine";
+    }
+    if (progress.mode === "elapsed") {
+      return `Temps ecoule : ${formatDuration(progress.elapsedSeconds)}`;
+    }
+    return progress.etaSeconds !== null && progress.etaSeconds > 0
+      ? `Temps restant estime : ${formatDuration(progress.etaSeconds)}`
+      : "Termine";
   }
 
   function addOrCompletePoint(nextDraft: DraftPoint) {
@@ -244,7 +308,7 @@ export default function App() {
   async function importMap() {
     setBusy(true);
     setStatus("Import en cours...");
-    startProgress("Import de la carte", 10000);
+    startElapsedProgress("Import de la carte");
     try {
       const result = await ipcClient.importMap(project.name);
       if (!result.success || !result.layer) {
@@ -309,7 +373,7 @@ export default function App() {
 
     setBusy(true);
     setStatus("Georeferencement en cours avec GDAL...");
-    startProgress("Georeferencement", 45000);
+    startElapsedProgress("Georeferencement");
     try {
       const result = await ipcClient.georeferenceLayer({ projectName: project.name, layer: selectedLayer });
       if (result.success && result.output) {
@@ -337,7 +401,7 @@ export default function App() {
 
     setBusy(true);
     setStatus("Generation des tuiles locales...");
-    startProgress("Generation des tuiles", 90000);
+    startElapsedProgress("Generation des tuiles");
     try {
       const result = await ipcClient.generateTiles({ projectName: project.name, layer: selectedLayer });
       if (result.success && result.tilesPath && result.urlTemplate) {
@@ -365,9 +429,9 @@ export default function App() {
 
     setBusy(true);
     setStatus("Preparation de la preview PDF detaillee...");
-    startProgress("Preview et export PDF", 18000);
+    startElapsedProgress("Preview et export PDF");
     try {
-      const result = await ipcClient.exportPdf({ project, selectedLayerId, area: exportSelectionArea });
+      const result = await ipcClient.exportPdf({ project, selectedLayerId, area: exportSelectionArea, baseMap, baseMapOpacity });
       setStatus(result.message);
     } finally {
       completeProgress();
@@ -432,7 +496,19 @@ export default function App() {
         projectName={project.name}
         exportSelectionEnabled={exportSelectionEnabled}
         theme={theme}
+        baseMaps={BASE_MAPS}
+        baseMapId={baseMap.id}
+        baseMapOpacity={baseMapOpacity}
         onProjectNameChange={(name) => updateProject((current) => ({ ...current, name }))}
+        onBaseMapChange={(nextBaseMapId) => {
+          const nextBaseMap = getBaseMap(nextBaseMapId);
+          setBaseMapId(nextBaseMap.id);
+          setStatus(`Fond de carte : ${nextBaseMap.name}.`);
+        }}
+        onBaseMapOpacityChange={(opacity) => {
+          setBaseMapOpacity(opacity);
+          setStatus(`Opacite du fond : ${Math.round(opacity * 100)}%.`);
+        }}
         onImport={importMap}
         onSave={saveProject}
         onOpen={openProject}
@@ -457,6 +533,19 @@ export default function App() {
           gridTemplateColumns: `${panelSizes.source}px 12px minmax(420px, 1fr) 12px ${panelSizes.side}px`,
         }}
       >
+        {operationProgress ? (
+          <div className="progress-overlay" role="status" aria-live="polite">
+            <div className="progress-overlay-panel">
+              <div className="progress-meta">
+                <span>{operationProgress.label}</span>
+                <span>{progressMessage(operationProgress)}</span>
+              </div>
+              <div className={`progress-track ${operationProgress.mode === "elapsed" ? "is-elapsed" : ""}`}>
+                <div className="progress-fill" style={operationProgress.mode === "elapsed" ? undefined : { width: `${operationProgress.value}%` }} />
+              </div>
+            </div>
+          </div>
+        ) : null}
         <section className="source-pane" aria-label="Carte source">
           <SourceImageView
             layers={project.layers}
@@ -482,6 +571,8 @@ export default function App() {
         <section className="map-pane" aria-label="Fond de carte">
           <MapView
             layers={project.layers}
+            baseMap={baseMap}
+            baseMapOpacity={baseMapOpacity}
             selectedLayerId={selectedLayerId}
             draftPoint={draftPoint.targetLatLng}
             focusLayerRequest={focusLayerRequest}
@@ -531,10 +622,10 @@ export default function App() {
           <div className="operation-progress" aria-label={`${operationProgress.label} ${operationProgress.value}%`}>
             <div className="progress-meta">
               <span>{operationProgress.label}</span>
-              <span>{operationProgress.etaSeconds > 0 ? `Temps restant estime : ${operationProgress.etaSeconds}s` : "Termine"}</span>
+              <span>{progressMessage(operationProgress)}</span>
             </div>
-            <div className="progress-track">
-              <div className="progress-fill" style={{ width: `${operationProgress.value}%` }} />
+            <div className={`progress-track ${operationProgress.mode === "elapsed" ? "is-elapsed" : ""}`}>
+              <div className="progress-fill" style={operationProgress.mode === "elapsed" ? undefined : { width: `${operationProgress.value}%` }} />
             </div>
           </div>
         ) : null}

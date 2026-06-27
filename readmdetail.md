@@ -7,13 +7,13 @@ Ce document explique le fonctionnement du projet a deux niveaux :
 
 ## 1. Objectif du projet
 
-ZgegMapping est une application desktop locale qui permet de georeferencer des cartes scannees ou anciennes et de les afficher en surcouche sur un fond OpenStreetMap.
+ZgegMapping est une application desktop locale qui permet de georeferencer des cartes scannees ou anciennes et de les afficher en surcouche sur un fond de carte configurable.
 
 Le cas d'usage principal est le suivant :
 
 1. importer une carte image ou PDF ;
 2. selectionner des points identifiables sur l'image source ;
-3. associer ces points a leurs positions reelles sur OpenStreetMap ;
+3. associer ces points a leurs positions reelles sur le fond de carte ;
 4. produire un fichier GeoTIFF georeference avec GDAL ;
 5. generer des tuiles locales XYZ compatibles Leaflet ;
 6. afficher, organiser et ajuster ces tuiles comme couches superposees.
@@ -111,7 +111,7 @@ y = position verticale en pixels
 
 Ces coordonnees sont stockees dans le brouillon du point tant que le point cible n'a pas encore ete place sur la carte.
 
-### 2.4 Vue carte OpenStreetMap
+### 2.4 Vue carte et fonds configurables
 
 La partie centrale de l'interface affiche une carte Leaflet initialisee sur Paris :
 
@@ -121,10 +121,14 @@ lng = 2.3522
 zoom = 13
 ```
 
-Le fond de carte utilise les tuiles publiques OpenStreetMap :
+Le fond de carte est choisi depuis le selecteur `Fond` de la barre d'outils.
+
+Les fonds disponibles sont :
 
 ```text
-https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png
+CARTO Voyager
+CARTO Clair
+OpenStreetMap
 ```
 
 La vue carte permet :
@@ -146,7 +150,7 @@ Les zones de travail sont redimensionnables. L'utilisateur peut maintenir le cli
 Un point de controle associe deux positions :
 
 - un point source en pixels sur l'image importee ;
-- un point cible en latitude/longitude sur OpenStreetMap.
+- un point cible en latitude/longitude sur le fond de carte.
 
 Structure d'un point :
 
@@ -315,7 +319,7 @@ Ce script verifie la presence des outils suivants dans le `PATH` :
 
 L'application affiche ensuite la liste des dependances manquantes ou confirme que tout est disponible.
 
-### 2.11 Preview et export PDF detaille
+### 2.11 Preview et export PDF haute resolution
 
 Le bouton `Zone PDF` active un mode de selection sur la carte.
 
@@ -326,23 +330,13 @@ Quand ce mode est actif :
 - l'application memorise l'emprise latitude/longitude de ce rectangle ;
 - l'application memorise aussi la zone exacte a capturer dans la fenetre Electron.
 
-Le bouton `Exporter PDF` genere un rendu haute resolution de la zone selectionnee, puis ouvre une preview du PDF detaille.
+Le bouton `Exporter PDF` genere un rendu haute resolution de la zone selectionnee, puis ouvre une preview globale de cette zone.
 
 Si aucune zone n'a ete selectionnee, l'application demande d'abord de definir une zone PDF.
 
-Le PDF contient :
+Le PDF exporte contient uniquement l'image haute resolution de la zone selectionnee, sans titre, tableau, metadonnees ou informations supplementaires.
 
-- une image haute resolution de la zone selectionnee ;
-- le nom du projet ;
-- la date de generation ;
-- la couche active ;
-- le nombre de couches visibles ;
-- l'emprise geographique ;
-- le tableau des couches ;
-- le tableau des points de controle ;
-- les informations du projet.
-
-La preview s'ouvre dans une fenetre Electron separee. L'utilisateur choisit ensuite le chemin final du PDF avec une boite de dialogue native.
+La preview s'ouvre dans une fenetre Electron separee et affiche un apercu global ajuste a la fenetre. L'utilisateur choisit ensuite le chemin final du PDF avec une boite de dialogue native.
 
 Le chemin propose par defaut est :
 
@@ -362,9 +356,11 @@ Les actions longues affichent une barre de suivi dans la barre de statut :
 - export PDF ;
 - verification des dependances.
 
-La barre affiche un pourcentage et un temps restant estime.
+Pour les actions courtes, la barre affiche un pourcentage et un temps restant estime.
 
-Les scripts GDAL actuels ne transmettent pas encore de progression precise en temps reel. L'estimation est donc calculee par l'interface a partir d'une duree indicative par type d'action.
+Pour les actions longues dont la progression reelle n'est pas fournie en continu par GDAL ou Poppler, comme l'import, le georeferencement, la generation des tuiles et l'export PDF, la barre devient active en mode indetermine et affiche le temps ecoule.
+
+Cela evite d'afficher un faux temps restant quand la duree depend fortement de la taille du fichier, du disque, du nombre de zooms et des outils systeme.
 
 ### 2.13 Mode jour et mode nuit
 
@@ -382,6 +378,23 @@ Le mode choisi modifie les couleurs de l'application :
 - barre de progression.
 
 Le choix est conserve dans `localStorage` sous la cle `zgeg-theme`.
+
+### 2.14 Selecteur de fond de carte
+
+La barre d'outils contient un selecteur `Fond`.
+
+Il permet de choisir le fond Leaflet utilise pour travailler :
+
+- `CARTO Voyager` ;
+- `CARTO Clair` ;
+- `Sombre rues jaunes` ;
+- `OpenStreetMap`.
+
+Le choix est conserve dans `localStorage` sous la cle `zgeg-basemap`.
+
+L'opacite du fond est reglable depuis la barre d'outils et conservee dans `localStorage` sous la cle `zgeg-basemap-opacity`.
+
+Le meme fond et la meme opacite sont utilises dans la carte principale, dans la preview d'export et dans le PDF exporte.
 
 ## 3. Fonctionnement technique global
 
@@ -460,6 +473,7 @@ window.zgegMapping.saveProject(project)
 window.zgegMapping.openProject()
 window.zgegMapping.georeferenceLayer(payload)
 window.zgegMapping.generateTiles(payload)
+window.zgegMapping.exportPdf(payload)
 window.zgegMapping.checkDependencies()
 ```
 
@@ -649,7 +663,7 @@ Role des dossiers :
 1. L'utilisateur clique sur l'image source.
 2. React calcule les coordonnees pixel.
 3. Le point source est stocke dans un brouillon.
-4. L'utilisateur clique sur OpenStreetMap.
+4. L'utilisateur clique sur le fond de carte.
 5. React recupere la latitude/longitude.
 6. Le point cible complete le brouillon.
 7. React cree un `ControlPoint`.
@@ -689,19 +703,19 @@ Le flux inverse fonctionne aussi : carte d'abord, image ensuite.
 3. `MapView` calcule les bornes latitude/longitude du rectangle.
 4. `MapView` calcule aussi le rectangle de capture dans la fenetre Electron.
 5. L'utilisateur clique sur `Exporter PDF`.
-6. React envoie le projet, la couche selectionnee et la zone d'export a Electron.
+6. React envoie le projet, la couche selectionnee, la zone d'export et le fond selectionne a Electron.
 7. Electron ouvre une fenetre Leaflet cachee plus grande que la zone visible.
-8. Electron rend OpenStreetMap et les couches visibles dans cette fenetre haute resolution.
+8. Electron rend le fond selectionne et les couches visibles dans cette fenetre haute resolution.
 9. Electron capture ce rendu haute resolution avec `webContents.capturePage`.
-10. Electron genere une page HTML de rapport detaille.
+10. Electron genere une page HTML de preview globale.
 11. Electron ouvre cette page dans une fenetre de preview.
 12. Electron ouvre une boite de dialogue de sauvegarde.
-13. Electron imprime la preview avec `webContents.printToPDF`.
+13. Electron imprime une page HTML separee contenant uniquement l'image haute resolution avec `webContents.printToPDF`.
 14. Le PDF est ecrit au chemin choisi par l'utilisateur.
 
 ## 6. Export actuel
 
-Le projet propose maintenant une preview et un export PDF detaille de la zone selectionnee sur la carte.
+Le projet propose maintenant une preview globale et un export PDF haute resolution de la zone selectionnee sur la carte.
 
 Les sorties actuelles sont :
 
@@ -723,7 +737,7 @@ projects/<nom_projet>/tiles/<layer-id>/<z>/<x>/<y>.png
 projects/<nom_projet>/project.json
 ```
 
-4. le PDF detaille :
+4. le PDF haute resolution :
 
 ```text
 projects/<nom_projet>/exports/<nom_projet>-export-<date>.pdf
@@ -733,7 +747,7 @@ Le GeoTIFF peut etre reutilise dans un SIG comme QGIS.
 
 Les tuiles peuvent etre reutilisees dans une application web Leaflet si le dossier est servi correctement.
 
-Le PDF sert de document de consultation et de partage. Il inclut un rendu haute resolution de la zone selectionnee et des informations de projet, mais ce n'est pas un format SIG georeference.
+Le PDF sert de document de consultation et de partage. Il inclut uniquement un rendu haute resolution de la zone selectionnee, mais ce n'est pas un format SIG georeference.
 
 ## 7. Limitations actuelles
 
@@ -768,13 +782,13 @@ Il n'y a pas encore d'interface avancee pour choisir :
 
 ### 7.4 Export final
 
-L'export PDF detaille existe, mais il n'y a pas encore :
+L'export PDF haute resolution existe, mais il n'y a pas encore :
 
 - d'export PNG/JPEG de la composition visible ;
 - d'export MBTiles ;
 - d'export d'un paquet autonome ;
 - d'export vers un serveur de tuiles ;
-- de configuration d'un fond local a la place d'OpenStreetMap.
+- de configuration d'un fond local ou prive.
 
 ## 8. Commandes de developpement
 
@@ -885,7 +899,7 @@ Python appelle GDAL et Poppler.
 
 GDAL transforme une image scannee en GeoTIFF puis en tuiles web.
 
-Leaflet affiche OpenStreetMap et les tuiles locales generees.
+Leaflet affiche le fond selectionne et les tuiles locales generees.
 
 Le coeur du projet est donc le passage :
 
@@ -894,5 +908,5 @@ image/PDF importe
 -> points de controle utilisateur
 -> GeoTIFF EPSG:3857
 -> tuiles XYZ locales
--> surcouche Leaflet sur OpenStreetMap
+-> surcouche Leaflet sur le fond selectionne
 ```
