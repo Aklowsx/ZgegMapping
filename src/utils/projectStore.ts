@@ -8,6 +8,7 @@ export function createEmptyProject(): MapProject {
     createdAt: now,
     updatedAt: now,
     layers: [],
+    pointLayers: [],
   };
 }
 

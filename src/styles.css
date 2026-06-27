@@ -210,6 +210,16 @@ select {
   flex-wrap: wrap;
 }
 
+.toolbar-import {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.toolbar-import select {
+  width: 116px;
+}
+
 .icon-button {
   width: 34px;
   min-width: 34px;
@@ -425,9 +435,115 @@ select {
   border-color: #17202a;
 }
 
+.csv-point-view {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  background: var(--workspace-bg);
+}
+
+.csv-display {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  background: var(--panel-bg);
+}
+
+.csv-summary {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.csv-summary span {
+  border-radius: 999px;
+  padding: 3px 7px;
+  background: var(--chip-bg);
+  color: var(--muted-strong);
+  font-size: 11px;
+}
+
+.csv-table-wrap {
+  min-height: 0;
+  overflow: auto;
+  background: #ffffff;
+  color: #17202a;
+}
+
+.csv-point-table {
+  width: 100%;
+  min-width: 780px;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.csv-point-table th,
+.csv-point-table td {
+  padding: 7px 8px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.csv-point-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #eef2f6;
+  color: #526174;
+  font-size: 11px;
+}
+
+.csv-point-table td:first-child {
+  max-width: 170px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.csv-options {
+  padding: 10px;
+  border-top: 1px solid var(--strong-border);
+  background: var(--panel-bg);
+  display: grid;
+  gap: 10px;
+}
+
+.csv-option-title {
+  color: var(--muted-strong);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.csv-options label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted-strong);
+  font-size: 12px;
+}
+
+.csv-checkbox-row {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+}
+
+.csv-checkbox-row input {
+  min-height: auto;
+}
+
 .leaflet-host {
   height: 100%;
   min-height: 0;
+}
+
+.point-label {
+  border: 1px solid rgb(15 23 42 / 18%);
+  border-radius: 4px;
+  background: rgb(255 255 255 / 92%);
+  color: #17202a;
+  font-size: 11px;
+  font-weight: 700;
 }
 
 .basemap-dark-yellow {
@@ -458,7 +574,8 @@ select {
 }
 
 .layer-list,
-.point-list {
+.point-list,
+.point-layer-list {
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -474,11 +591,44 @@ select {
 }
 
 .layer-item,
-.point-item {
+.point-item,
+.point-layer-item {
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 9px;
   background: var(--item-bg);
+}
+
+.point-layer-panel {
+  max-height: 220px;
+  display: flex;
+  flex-direction: column;
+}
+
+.point-layer-list {
+  overflow-y: auto;
+}
+
+.point-layer-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+}
+
+.point-layer-title strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.point-layer-title span {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 .layer-item.selected {

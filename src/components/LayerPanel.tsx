@@ -97,6 +97,7 @@ export function LayerPanel({ layers, selectedLayerId, onSelectLayer, onLayersCha
               <div className="layer-meta">
                 <span>{layer.controlPoints.length} pts</span>
                 <span>{layer.georefFilePath ? "GeoTIFF" : "Non georef."}</span>
+                <span>{layer.overlayImageUrl ? "Apercu rapide" : "Sans apercu"}</span>
                 <span>{layer.tileUrlTemplate ? "Tuiles" : "Sans tuiles"}</span>
               </div>
             </article>

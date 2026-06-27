@@ -1,15 +1,17 @@
 import L from "leaflet";
 import { useEffect, useRef } from "react";
-import type { BaseMapConfig, ControlPoint, ExportMapArea, MapLayer } from "../types/project";
+import type { BaseMapConfig, ControlPoint, ExportMapArea, MapLayer, PointLayer } from "../types/project";
 import { controlPointBounds } from "../utils/leafletHelpers";
 
 type MapViewProps = {
   layers: MapLayer[];
+  pointLayers: PointLayer[];
   baseMap: BaseMapConfig;
   baseMapOpacity: number;
   selectedLayerId: string | null;
   draftPoint?: ControlPoint["targetLatLng"];
   focusLayerRequest: { layerId: string; nonce: number } | null;
+  focusPointLayerRequest: { pointLayerId: string; nonce: number } | null;
   exportSelectionEnabled: boolean;
   onPickTarget(point: ControlPoint["targetLatLng"]): void;
   onExportAreaChange(area: ExportMapArea | null): void;
@@ -18,11 +20,13 @@ type MapViewProps = {
 
 export function MapView({
   layers,
+  pointLayers,
   baseMap,
   baseMapOpacity,
   selectedLayerId,
   draftPoint,
   focusLayerRequest,
+  focusPointLayerRequest,
   exportSelectionEnabled,
   onPickTarget,
   onExportAreaChange,
@@ -32,6 +36,8 @@ export function MapView({
   const mapRef = useRef<L.Map | null>(null);
   const baseLayerRef = useRef<L.TileLayer | null>(null);
   const overlaysRef = useRef<Map<string, L.TileLayer>>(new Map());
+  const imageOverlaysRef = useRef<Map<string, L.ImageOverlay>>(new Map());
+  const pointLayersRef = useRef<Map<string, L.LayerGroup>>(new Map());
   const markersRef = useRef<L.LayerGroup | null>(null);
   const exportSelectionEnabledRef = useRef(exportSelectionEnabled);
   const selectionStartRef = useRef<L.LatLng | null>(null);
@@ -136,6 +142,8 @@ export function MapView({
       mapRef.current = null;
       baseLayerRef.current = null;
       overlaysRef.current.clear();
+      imageOverlaysRef.current.clear();
+      pointLayersRef.current.clear();
       markersRef.current = null;
     };
   }, []);
@@ -273,16 +281,52 @@ export function MapView({
       return;
     }
 
-    const activeIds = new Set(layers.filter((layer) => layer.tileUrlTemplate).map((layer) => layer.id));
+    const activeTileIds = new Set(layers.filter((layer) => !(layer.overlayImageUrl && layer.overlayBounds) && layer.tileUrlTemplate).map((layer) => layer.id));
+    const activeImageIds = new Set(layers.filter((layer) => layer.overlayImageUrl && layer.overlayBounds).map((layer) => layer.id));
 
     overlaysRef.current.forEach((overlay, layerId) => {
-      if (!activeIds.has(layerId)) {
+      if (!activeTileIds.has(layerId)) {
         overlay.removeFrom(map);
         overlaysRef.current.delete(layerId);
       }
     });
 
+    imageOverlaysRef.current.forEach((overlay, layerId) => {
+      if (!activeImageIds.has(layerId)) {
+        overlay.removeFrom(map);
+        imageOverlaysRef.current.delete(layerId);
+      }
+    });
+
     layers.forEach((layer, index) => {
+      if (layer.overlayImageUrl && layer.overlayBounds) {
+        let overlay = imageOverlaysRef.current.get(layer.id);
+        const bounds = L.latLngBounds(
+          [layer.overlayBounds.south, layer.overlayBounds.west],
+          [layer.overlayBounds.north, layer.overlayBounds.east],
+        );
+
+        if (!overlay) {
+          overlay = L.imageOverlay(layer.overlayImageUrl, bounds, {
+            opacity: layer.opacity,
+            zIndex: 200 + index,
+            crossOrigin: true,
+          });
+          imageOverlaysRef.current.set(layer.id, overlay);
+        }
+
+        overlay.setOpacity(layer.opacity);
+        overlay.setBounds(bounds);
+        overlay.setZIndex(200 + index);
+        if (layer.visible && !map.hasLayer(overlay)) {
+          overlay.addTo(map);
+        }
+        if (!layer.visible && map.hasLayer(overlay)) {
+          overlay.removeFrom(map);
+        }
+        return;
+      }
+
       if (!layer.tileUrlTemplate) {
         return;
       }
@@ -345,16 +389,91 @@ export function MapView({
 
   useEffect(() => {
     const map = mapRef.current;
+    if (!map) {
+      return;
+    }
+
+    const activeIds = new Set(pointLayers.map((pointLayer) => pointLayer.id));
+    pointLayersRef.current.forEach((group, pointLayerId) => {
+      if (!activeIds.has(pointLayerId)) {
+        group.removeFrom(map);
+        pointLayersRef.current.delete(pointLayerId);
+      }
+    });
+
+    pointLayers.forEach((pointLayer) => {
+      let group = pointLayersRef.current.get(pointLayer.id);
+      if (!group) {
+        group = L.layerGroup();
+        pointLayersRef.current.set(pointLayer.id, group);
+      }
+
+      group.clearLayers();
+      pointLayer.points.forEach((point) => {
+        const marker = L.circleMarker([point.targetLatLng.lat, point.targetLatLng.lng], {
+          radius: 6,
+          color: pointLayer.color,
+          weight: 2,
+          fillColor: "#ffffff",
+          fillOpacity: 0.96,
+        });
+        const label = pointLayer.labelColumn ? point.properties[pointLayer.labelColumn] : point.name;
+        marker.bindTooltip(pointLayer.showLabels && label ? label : `${point.name} - ${point.sourceProjection} -> ${point.targetLatLng.lat}, ${point.targetLatLng.lng}`, {
+          direction: pointLayer.showLabels ? "right" : "top",
+          offset: pointLayer.showLabels ? [8, 0] : [0, -6],
+          permanent: pointLayer.showLabels,
+          className: pointLayer.showLabels ? "point-label" : undefined,
+        });
+        marker.addTo(group);
+      });
+
+      if (pointLayer.visible && !map.hasLayer(group)) {
+        group.addTo(map);
+      }
+      if (!pointLayer.visible && map.hasLayer(group)) {
+        group.removeFrom(map);
+      }
+    });
+  }, [pointLayers]);
+
+  useEffect(() => {
+    const map = mapRef.current;
     if (!map || !focusLayerRequest) {
       return;
     }
 
     const layer = layers.find((candidate) => candidate.id === focusLayerRequest.layerId);
+    if (layer?.overlayBounds) {
+      map.fitBounds(
+        [
+          [layer.overlayBounds.south, layer.overlayBounds.west],
+          [layer.overlayBounds.north, layer.overlayBounds.east],
+        ],
+        { maxZoom: 17, padding: [40, 40] },
+      );
+      return;
+    }
+
     const bounds = layer ? controlPointBounds(layer.controlPoints) : null;
     if (bounds && bounds.length > 0) {
       map.fitBounds(bounds, { maxZoom: 17, padding: [40, 40] });
     }
   }, [focusLayerRequest, layers]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !focusPointLayerRequest) {
+      return;
+    }
+
+    const pointLayer = pointLayers.find((candidate) => candidate.id === focusPointLayerRequest.pointLayerId);
+    if (!pointLayer || pointLayer.points.length === 0) {
+      return;
+    }
+
+    const bounds = L.latLngBounds(pointLayer.points.map((point) => [point.targetLatLng.lat, point.targetLatLng.lng]));
+    map.fitBounds(bounds, { maxZoom: 17, padding: [40, 40] });
+  }, [focusPointLayerRequest, pointLayers]);
 
   return (
     <div className="map-view">

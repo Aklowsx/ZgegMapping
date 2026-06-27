@@ -7,7 +7,7 @@ Ce document explique le fonctionnement du projet a deux niveaux :
 
 ## 1. Objectif du projet
 
-ZgegMapping est une application desktop locale qui permet de georeferencer des cartes scannees ou anciennes et de les afficher en surcouche sur un fond de carte configurable.
+ZgegMapping est une application desktop locale qui permet de georeferencer des cartes scannees ou anciennes, d'importer des CSV de points et d'afficher ces donnees en surcouche sur un fond de carte configurable.
 
 Le cas d'usage principal est le suivant :
 
@@ -15,8 +15,10 @@ Le cas d'usage principal est le suivant :
 2. selectionner des points identifiables sur l'image source ;
 3. associer ces points a leurs positions reelles sur le fond de carte ;
 4. produire un fichier GeoTIFF georeference avec GDAL ;
-5. generer des tuiles locales XYZ compatibles Leaflet ;
-6. afficher, organiser et ajuster ces tuiles comme couches superposees.
+5. generer un apercu rapide sous forme d'image georeferencee unique ;
+6. generer des tuiles locales XYZ compatibles Leaflet si un rendu plus detaille est necessaire ;
+7. importer des points CSV en WGS84, Web Mercator ou Lambert 93 ;
+8. afficher, organiser et ajuster ces rendus comme couches superposees.
 
 L'application ne devine pas automatiquement les coordonnees. Les correspondances entre l'image et la carte viennent uniquement des clics ou des valeurs saisies par l'utilisateur.
 
@@ -30,7 +32,7 @@ Un projet contient :
 - une date de creation ;
 - une date de derniere modification ;
 - une liste de couches de cartes ;
-- les chemins vers les fichiers importes, convertis, georeferences et tuiles ;
+- les chemins vers les fichiers importes, CSV de points, convertis, georeferences, apercus rapides et tuiles ;
 - les points de controle associes a chaque couche.
 
 Au demarrage, l'application cree en memoire un projet vide appele `Mon projet`.
@@ -137,7 +139,7 @@ La vue carte permet :
 - de deplacer le fond avec un clic gauche maintenu ;
 - de cliquer pour placer le point cible ;
 - d'afficher les marqueurs des points de controle ;
-- d'afficher les couches georeferencees sous forme de tuiles locales ;
+- d'afficher les couches georeferencees sous forme d'apercu rapide ou de tuiles locales ;
 - de respecter l'ordre, l'opacite et la visibilite des couches ;
 - de recentrer la carte sur les points d'une couche.
 
@@ -205,6 +207,7 @@ Le panneau affiche aussi des informations rapides :
 
 - nombre de points ;
 - presence ou absence d'un GeoTIFF ;
+- presence ou absence d'un apercu rapide ;
 - presence ou absence de tuiles.
 
 L'ordre des couches dans le tableau React determine aussi leur `zIndex` dans Leaflet. Les couches plus basses ou plus hautes peuvent donc apparaitre au-dessus ou au-dessous selon leur position.
@@ -222,7 +225,101 @@ Il permet de :
 
 Les modifications mettent a jour directement l'etat React du projet.
 
-### 2.8 Georeferencement
+### 2.8 Import CSV de points
+
+Le menu d'import permet de choisir `Carte` ou `Points CSV`.
+
+En mode `Carte`, la zone gauche garde l'interface d'image source utilisee pour poser les points de controle.
+
+En mode `Points CSV`, le bouton `Importer` ouvre une boite de dialogue native Electron et la zone gauche affiche le tableau du CSV importe.
+
+L'application importe les points, convertit leurs coordonnees vers le systeme utilise par la carte, puis les affiche directement sur le fond Leaflet.
+
+Formats de colonnes acceptes :
+
+```text
+lat,lng
+latitude,longitude
+x,y
+easting,northing
+geo_point_2d
+geometry
+wkt
+```
+
+Colonnes optionnelles pour le nom :
+
+```text
+name
+nom
+label
+libelle
+id
+numero
+```
+
+Colonnes optionnelles pour forcer la projection source :
+
+```text
+epsg
+projection
+srid
+srs
+crs
+```
+
+Projections prises en charge :
+
+- `EPSG:4326` / WGS84 latitude-longitude ;
+- `EPSG:3857` / Web Mercator ;
+- `EPSG:2154` / Lambert 93.
+
+Si aucune projection n'est precisee, l'application detecte automatiquement :
+
+- `lat/lng` si les valeurs ressemblent a des coordonnees geographiques ;
+- Lambert 93 si les valeurs ressemblent a des coordonnees metropolitaines `EPSG:2154` ;
+- Web Mercator sinon.
+
+Chaque point garde ses coordonnees source et recoit une coordonnee convertie :
+
+```ts
+source: {
+  x: number;
+  y: number;
+};
+sourceProjection: "EPSG:4326" | "EPSG:3857" | "EPSG:2154";
+targetLatLng: {
+  lat: number;
+  lng: number;
+};
+```
+
+Les points importes apparaissent dans le panneau `Points CSV`, ou l'utilisateur peut :
+
+- masquer ou afficher le jeu de points ;
+- centrer la carte dessus ;
+- supprimer le jeu de points.
+
+La zone gauche est divisee en deux parties :
+
+1. en haut, le tableau CSV sur fond blanc ;
+2. en bas, les options de conversion et d'affichage.
+
+Le tableau affiche les colonnes utiles du CSV :
+
+- nom du point ;
+- coordonnees source ;
+- projection source ;
+- latitude/longitude converties pour Leaflet.
+
+Les options permettent de :
+
+- choisir le type de coordonnees source : `EPSG:4326`, `EPSG:3857` ou `EPSG:2154` ;
+- recalculer les points convertis quand la projection change ;
+- cocher ou decocher l'affichage d'un texte a cote des points ;
+- choisir la colonne CSV a utiliser comme nom affiche.
+
+### 2.9 Georeferencement
 
 Le bouton `Georeferencer la carte` lance la creation d'un GeoTIFF.
 
@@ -257,7 +354,49 @@ Si l'operation reussit, le chemin du GeoTIFF est stocke dans la couche :
 georefFilePath: string
 ```
 
-### 2.9 Generation des tuiles
+### 2.10 Apercu rapide sans tuiles
+
+Le bouton `Apercu rapide` transforme un GeoTIFF en une seule image JPEG optimisee pour l'affichage.
+
+Cette option evite de generer toute la pyramide de tuiles. Elle est donc beaucoup plus rapide pour verifier que le georeferencement est correct.
+
+Conditions necessaires :
+
+- une couche doit etre selectionnee ;
+- cette couche doit deja avoir un `georefFilePath`.
+
+Etapes :
+
+1. Electron verifie la presence du GeoTIFF dans la couche.
+2. Electron lance le script Python `backend/generate_overlay.py`.
+3. Le script lit les informations geographiques avec `gdalinfo -json`.
+4. Le script calcule les bornes latitude/longitude de l'image.
+5. Le script cree un JPEG limite par defaut a 4096 px sur son plus grand cote avec `gdal_translate`.
+6. L'image est ecrite dans :
+
+```text
+projects/<nom_projet>/overlays/<layer-id>.jpg
+```
+
+Quand la generation reussit, la couche recoit :
+
+```ts
+overlayImagePath: string;
+overlayImageUrl: string;
+overlayBounds: {
+  north: number;
+  south: number;
+  east: number;
+  west: number;
+};
+visible: true;
+```
+
+`MapView` affiche alors cette image avec `L.imageOverlay`.
+
+Limite : l'apercu rapide est moins adapte qu'une pyramide de tuiles pour zoomer tres loin dans une image enorme, mais il est beaucoup plus rapide a produire.
+
+### 2.11 Generation des tuiles detaillees
 
 Le bouton `Generer les tuiles` transforme un GeoTIFF en tuiles locales.
 
@@ -306,20 +445,21 @@ file:///.../tiles/<layer-id>/{z}/{x}/{y}.png
 
 Leaflet peut alors afficher la carte georeferencee comme une surcouche.
 
-### 2.10 Verification des dependances
+### 2.12 Verification des dependances
 
 Le bouton avec l'icone de reglages lance `backend/check_dependencies.py`.
 
 Ce script verifie la presence des outils suivants dans le `PATH` :
 
 - `gdal_translate`
+- `gdalinfo`
 - `gdalwarp`
 - `gdal2tiles` ou `gdal2tiles.py`
 - `pdftoppm`
 
 L'application affiche ensuite la liste des dependances manquantes ou confirme que tout est disponible.
 
-### 2.11 Preview et export PDF haute resolution
+### 2.13 Preview et export PDF haute resolution
 
 Le bouton `Zone PDF` active un mode de selection sur la carte.
 
@@ -344,7 +484,7 @@ Le chemin propose par defaut est :
 projects/<nom_projet>/exports/<nom_projet>-export-<date>.pdf
 ```
 
-### 2.12 Barre de suivi
+### 2.14 Barre de suivi
 
 Les actions longues affichent une barre de suivi dans la barre de statut :
 
@@ -352,17 +492,18 @@ Les actions longues affichent une barre de suivi dans la barre de statut :
 - sauvegarde ;
 - ouverture ;
 - georeferencement ;
+- apercu rapide ;
 - generation des tuiles ;
 - export PDF ;
 - verification des dependances.
 
 Pour les actions courtes, la barre affiche un pourcentage et un temps restant estime.
 
-Pour les actions longues dont la progression reelle n'est pas fournie en continu par GDAL ou Poppler, comme l'import, le georeferencement, la generation des tuiles et l'export PDF, la barre devient active en mode indetermine et affiche le temps ecoule.
+Pour les actions longues dont la progression reelle n'est pas fournie en continu par GDAL ou Poppler, comme l'import, le georeferencement, l'apercu rapide, la generation des tuiles et l'export PDF, la barre devient active en mode indetermine et affiche le temps ecoule.
 
 Cela evite d'afficher un faux temps restant quand la duree depend fortement de la taille du fichier, du disque, du nombre de zooms et des outils systeme.
 
-### 2.13 Mode jour et mode nuit
+### 2.15 Mode jour et mode nuit
 
 L'interface propose un bouton `Jour` / `Nuit` dans la barre d'outils.
 
@@ -379,7 +520,7 @@ Le mode choisi modifie les couleurs de l'application :
 
 Le choix est conserve dans `localStorage` sous la cle `zgeg-theme`.
 
-### 2.14 Selecteur de fond de carte
+### 2.16 Selecteur de fond de carte
 
 La barre d'outils contient un selecteur `Fond`.
 
@@ -408,7 +549,7 @@ Le projet utilise :
 - TypeScript pour le frontend et le main process Electron ;
 - Leaflet pour la carte interactive ;
 - Python pour appeler les outils geospatiaux ;
-- GDAL pour le georeferencement et la generation de tuiles ;
+- GDAL pour le georeferencement, l'apercu rapide et la generation de tuiles ;
 - Poppler pour convertir les PDF.
 
 ### 3.2 Separation des responsabilites
@@ -428,6 +569,7 @@ Responsabilites :
 - collecter les clics utilisateur ;
 - afficher les points de controle ;
 - afficher les couches Leaflet ;
+- afficher les jeux de points CSV ;
 - appeler les methodes IPC exposees par Electron.
 
 Electron :
@@ -441,6 +583,7 @@ Responsabilites :
 - creer la fenetre desktop ;
 - ouvrir les boites de dialogue natives ;
 - copier les fichiers importes ;
+- copier et parser les CSV de points ;
 - creer les dossiers de projet ;
 - lire et ecrire `project.json` ;
 - lancer les scripts Python ;
@@ -458,6 +601,7 @@ Responsabilites :
 - convertir les PDF ;
 - appeler GDAL ;
 - produire les GeoTIFF ;
+- produire les apercus rapides ;
 - produire les tuiles ;
 - ecrire les logs techniques.
 
@@ -469,9 +613,11 @@ Electron expose une API securisee via `contextBridge` dans `electron/preload.ts`
 
 ```ts
 window.zgegMapping.importMap(projectName)
+window.zgegMapping.importPointCsv(projectName)
 window.zgegMapping.saveProject(project)
 window.zgegMapping.openProject()
 window.zgegMapping.georeferenceLayer(payload)
+window.zgegMapping.generateOverlay(payload)
 window.zgegMapping.generateTiles(payload)
 window.zgegMapping.exportPdf(payload)
 window.zgegMapping.checkDependencies()
@@ -503,9 +649,11 @@ Canaux disponibles :
 
 ```text
 project:import-map
+points:import-csv
 project:save
 project:open
 layer:georeference
+layer:generate-overlay
 layer:generate-tiles
 tools:check-dependencies
 ```
@@ -539,6 +687,7 @@ Exemples :
 convert_pdf.log
 georeference-gdal_translate.log
 georeference-gdalwarp.log
+generate_overlay.log
 generate_tiles.log
 georeference-error.log
 ```
@@ -551,6 +700,7 @@ Ils sont utiles pour diagnostiquer :
 - un fichier non lisible ;
 - une erreur GDAL ;
 - une erreur de conversion PDF ;
+- un probleme de creation de l'apercu rapide ;
 - un probleme de generation des tuiles.
 
 ## 4. Structure des donnees
@@ -572,6 +722,7 @@ export type MapProject = {
   createdAt: string;
   updatedAt: string;
   layers: MapLayer[];
+  pointLayers: PointLayer[];
 };
 ```
 
@@ -584,11 +735,47 @@ export type MapLayer = {
   originalFilePath: string;
   convertedImagePath?: string;
   georefFilePath?: string;
+  overlayImagePath?: string;
+  overlayImageUrl?: string;
+  overlayBounds?: MapBounds;
   tilesPath?: string;
   tileUrlTemplate?: string;
   opacity: number;
   visible: boolean;
   controlPoints: ControlPoint[];
+};
+```
+
+Un jeu de points CSV :
+
+```ts
+export type PointLayer = {
+  id: string;
+  name: string;
+  originalFilePath: string;
+  sourceProjection: CoordinateProjection;
+  visible: boolean;
+  color: string;
+  points: ImportedPoint[];
+};
+```
+
+Un point importe :
+
+```ts
+export type ImportedPoint = {
+  id: string;
+  name: string;
+  source: {
+    x: number;
+    y: number;
+  };
+  sourceProjection: CoordinateProjection;
+  targetLatLng: {
+    lat: number;
+    lng: number;
+  };
+  properties: Record<string, string>;
 };
 ```
 
@@ -616,8 +803,10 @@ Chaque projet suit cette structure :
 ```text
 projects/<nom_projet>/
 +-- originals/
++-- points/
 +-- converted/
 +-- georeferenced/
++-- overlays/
 +-- tiles/
 +-- logs/
 +-- control_points/
@@ -628,8 +817,10 @@ projects/<nom_projet>/
 Role des dossiers :
 
 - `originals/` : fichiers importes par l'utilisateur ;
+- `points/` : CSV de points importes ;
 - `converted/` : PNG generes depuis les PDF ;
 - `georeferenced/` : GeoTIFF produits par GDAL ;
+- `overlays/` : JPEG optimises pour l'apercu rapide ;
 - `tiles/` : tuiles XYZ produites par `gdal2tiles` ;
 - `logs/` : traces des commandes Python/GDAL ;
 - `control_points/` : points de controle exportes en JSON avant georeferencement ;
@@ -658,7 +849,20 @@ Role des dossiers :
 6. Le PNG est stocke dans `converted/`.
 7. React affiche le PNG converti comme image source.
 
-### 5.3 Flux de creation d'un point
+### 5.3 Flux d'import CSV de points
+
+1. L'utilisateur choisit `Points CSV` dans le menu d'import, puis clique sur `Importer`.
+2. Electron ouvre une boite de dialogue.
+3. L'utilisateur choisit un CSV.
+4. Electron copie le CSV dans `points/`.
+5. Electron parse les colonnes et detecte ou lit la projection source.
+6. Electron convertit chaque point vers `EPSG:4326` latitude-longitude.
+7. Electron renvoie un `PointLayer`.
+8. React stocke ce jeu de points dans `project.pointLayers`.
+9. `MapView` affiche les points avec des `L.CircleMarker`.
+10. La carte se centre sur les points importes.
+
+### 5.4 Flux de creation d'un point
 
 1. L'utilisateur clique sur l'image source.
 2. React calcule les coordonnees pixel.
@@ -671,7 +875,7 @@ Role des dossiers :
 
 Le flux inverse fonctionne aussi : carte d'abord, image ensuite.
 
-### 5.4 Flux de georeferencement
+### 5.5 Flux de georeferencement
 
 1. L'utilisateur selectionne une couche.
 2. La couche doit contenir au moins 3 points.
@@ -684,7 +888,19 @@ Le flux inverse fonctionne aussi : carte d'abord, image ensuite.
 9. Python renvoie le chemin du GeoTIFF.
 10. React stocke ce chemin dans `georefFilePath`.
 
-### 5.5 Flux de generation des tuiles
+### 5.6 Flux d'apercu rapide
+
+1. L'utilisateur selectionne une couche georeferencee.
+2. React appelle `ipcClient.generateOverlay`.
+3. Electron lance `backend/generate_overlay.py`.
+4. Python lit les bornes avec `gdalinfo -json`.
+5. Python cree un JPEG optimise avec `gdal_translate`.
+6. Python renvoie `imagePath`, `imageUrl` et `bounds`.
+7. React stocke ces valeurs dans la couche.
+8. `MapView` cree ou met a jour une `L.ImageOverlay`.
+9. Leaflet affiche la surcouche locale sans tuiles.
+
+### 5.7 Flux de generation des tuiles
 
 1. L'utilisateur selectionne une couche georeferencee.
 2. React appelle `ipcClient.generateTiles`.
@@ -696,7 +912,7 @@ Le flux inverse fonctionne aussi : carte d'abord, image ensuite.
 8. `MapView` cree ou met a jour une `L.TileLayer`.
 9. Leaflet affiche la surcouche locale.
 
-### 5.6 Flux d'export PDF
+### 5.8 Flux d'export PDF
 
 1. L'utilisateur active `Zone PDF`.
 2. L'utilisateur glisse sur la carte pour dessiner le rectangle.
@@ -725,25 +941,33 @@ Les sorties actuelles sont :
 projects/<nom_projet>/georeferenced/<layer-id>.tif
 ```
 
-2. les tuiles locales :
+2. l'apercu rapide :
+
+```text
+projects/<nom_projet>/overlays/<layer-id>.jpg
+```
+
+3. les tuiles locales :
 
 ```text
 projects/<nom_projet>/tiles/<layer-id>/<z>/<x>/<y>.png
 ```
 
-3. le fichier de projet :
+4. le fichier de projet :
 
 ```text
 projects/<nom_projet>/project.json
 ```
 
-4. le PDF haute resolution :
+5. le PDF haute resolution :
 
 ```text
 projects/<nom_projet>/exports/<nom_projet>-export-<date>.pdf
 ```
 
 Le GeoTIFF peut etre reutilise dans un SIG comme QGIS.
+
+L'apercu rapide est fait pour verifier et travailler vite dans ZgegMapping.
 
 Les tuiles peuvent etre reutilisees dans une application web Leaflet si le dossier est servi correctement.
 
@@ -884,6 +1108,7 @@ Scripts backend :
 backend/check_dependencies.py
 backend/convert_pdf.py
 backend/georeference.py
+backend/generate_overlay.py
 backend/generate_tiles.py
 ```
 
@@ -897,9 +1122,9 @@ Electron donne acces au disque, aux boites de dialogue et aux scripts Python.
 
 Python appelle GDAL et Poppler.
 
-GDAL transforme une image scannee en GeoTIFF puis en tuiles web.
+GDAL transforme une image scannee en GeoTIFF, puis en apercu rapide ou en tuiles web selon le besoin.
 
-Leaflet affiche le fond selectionne et les tuiles locales generees.
+Leaflet affiche le fond selectionne, l'apercu rapide et/ou les tuiles locales generees.
 
 Le coeur du projet est donc le passage :
 
@@ -907,6 +1132,6 @@ Le coeur du projet est donc le passage :
 image/PDF importe
 -> points de controle utilisateur
 -> GeoTIFF EPSG:3857
--> tuiles XYZ locales
+-> JPEG georeference rapide ou tuiles XYZ locales
 -> surcouche Leaflet sur le fond selectionne
 ```

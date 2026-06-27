@@ -1,12 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import { ControlPointPanel } from "./components/ControlPointPanel";
+import { CsvPointView } from "./components/CsvPointView";
 import { LayerPanel } from "./components/LayerPanel";
 import { MapView } from "./components/MapView";
+import { PointLayerPanel } from "./components/PointLayerPanel";
 import { SourceImageView } from "./components/SourceImageView";
 import { Toolbar } from "./components/Toolbar";
-import type { ControlPoint, ExportMapArea, MapLayer, MapProject } from "./types/project";
+import type { ImportMode } from "./components/Toolbar";
+import type { ControlPoint, CoordinateProjection, ExportMapArea, MapLayer, MapProject, PointLayer } from "./types/project";
 import { BASE_MAPS, DEFAULT_BASE_MAP_ID, getBaseMap } from "./utils/baseMaps";
+import { roundedLatLng } from "./utils/coordinateConversion";
 import { ipcClient } from "./utils/ipcClient";
 import { createEmptyProject, touchProject } from "./utils/projectStore";
 
@@ -36,11 +40,14 @@ export default function App() {
     return Number.isFinite(storedOpacity) ? Math.min(1, Math.max(0.15, storedOpacity)) : 1;
   });
   const [selectedLayerId, setSelectedLayerId] = useState<string | null>(null);
+  const [selectedPointLayerId, setSelectedPointLayerId] = useState<string | null>(null);
+  const [importMode, setImportMode] = useState<ImportMode>("map");
   const [draftPoint, setDraftPoint] = useState<DraftPoint>({});
   const [status, setStatus] = useState("Pret.");
   const [busy, setBusy] = useState(false);
   const [operationProgress, setOperationProgress] = useState<OperationProgress | null>(null);
   const [focusLayerRequest, setFocusLayerRequest] = useState<{ layerId: string; nonce: number } | null>(null);
+  const [focusPointLayerRequest, setFocusPointLayerRequest] = useState<{ pointLayerId: string; nonce: number } | null>(null);
   const [exportSelectionEnabled, setExportSelectionEnabled] = useState(false);
   const [exportSelectionArea, setExportSelectionArea] = useState<ExportMapArea | null>(null);
   const [panelSizes, setPanelSizes] = useState({ source: 520, side: 360 });
@@ -53,6 +60,7 @@ export default function App() {
     () => project.layers.find((layer) => layer.id === selectedLayerId),
     [project.layers, selectedLayerId],
   );
+  const pointLayers = project.pointLayers ?? [];
   const baseMap = useMemo(() => getBaseMap(baseMapId), [baseMapId]);
 
   useEffect(() => {
@@ -296,7 +304,7 @@ export default function App() {
       setDraftPoint({});
       setStatus(
         pointIndex >= 3
-          ? `${point.name} ajoute. Vous pouvez maintenant georeferencer la carte, puis generer les tuiles pour l'afficher sur le fond.`
+          ? `${point.name} ajoute. Vous pouvez maintenant georeferencer la carte, puis lancer l'apercu rapide.`
           : `${point.name} ajoute. Minimum 3 points, 6 a 10 recommandes pour une carte ancienne ou deformee.`,
       );
     } else {
@@ -321,8 +329,34 @@ export default function App() {
         layers: [...current.layers, result.layer as MapLayer],
       }));
       setSelectedLayerId(result.layer.id);
+      setImportMode("map");
       setDraftPoint({});
       setStatus("Carte importee. Placez des points de controle sur les deux vues.");
+    } finally {
+      completeProgress();
+      setBusy(false);
+    }
+  }
+
+  async function importPointCsv() {
+    setBusy(true);
+    setStatus("Import du CSV de points...");
+    startElapsedProgress("Import points CSV");
+    try {
+      const result = await ipcClient.importPointCsv(project.name);
+      if (!result.success || !result.pointLayer) {
+        setStatus(result.message);
+        return;
+      }
+
+      updateProject((current) => ({
+        ...current,
+        pointLayers: [...(current.pointLayers ?? []), result.pointLayer as PointLayer],
+      }));
+      setSelectedPointLayerId(result.pointLayer.id);
+      setImportMode("points");
+      setFocusPointLayerRequest({ pointLayerId: result.pointLayer.id, nonce: Date.now() });
+      setStatus(`${result.message}${result.skippedRows ? ` ${result.skippedRows} ligne(s) ignorees.` : ""}`);
     } finally {
       completeProgress();
       setBusy(false);
@@ -349,8 +383,13 @@ export default function App() {
     try {
       const result = await ipcClient.openProject();
       if (result.success && result.project) {
-        setProject(result.project);
+        setProject({
+          ...result.project,
+          layers: result.project.layers ?? [],
+          pointLayers: result.project.pointLayers ?? [],
+        });
         setSelectedLayerId(result.project.layers[0]?.id ?? null);
+        setSelectedPointLayerId(result.project.pointLayers?.[0]?.id ?? null);
         setDraftPoint({});
       }
       setStatus(result.message);
@@ -378,7 +417,43 @@ export default function App() {
       const result = await ipcClient.georeferenceLayer({ projectName: project.name, layer: selectedLayer });
       if (result.success && result.output) {
         updateLayer(selectedLayer.id, (layer) => ({ ...layer, georefFilePath: result.output }));
-        setStatus("GeoTIFF cree avec succes. Generez les tuiles pour afficher la carte sur le fond.");
+        setStatus("GeoTIFF cree avec succes. Lancez l'apercu rapide pour l'afficher sans attendre les tuiles.");
+        return;
+      }
+      setStatus(result.message);
+    } finally {
+      completeProgress();
+      setBusy(false);
+    }
+  }
+
+  async function generateOverlay() {
+    if (!selectedLayer) {
+      setStatus("Selectionnez une couche.");
+      return;
+    }
+
+    if (!selectedLayer.georefFilePath) {
+      setStatus("Georeferencez la couche avant de creer l'apercu rapide.");
+      return;
+    }
+
+    setBusy(true);
+    setStatus("Creation de l'apercu rapide...");
+    startElapsedProgress("Apercu rapide");
+    try {
+      const result = await ipcClient.generateOverlay({ projectName: project.name, layer: selectedLayer });
+      if (result.success && result.imagePath && result.imageUrl && result.bounds) {
+        updateLayer(selectedLayer.id, (layer) => ({
+          ...layer,
+          overlayImagePath: result.imagePath,
+          overlayImageUrl: result.imageUrl,
+          overlayBounds: result.bounds,
+          tileUrlTemplate: undefined,
+          visible: true,
+        }));
+        setFocusLayerRequest({ layerId: selectedLayer.id, nonce: Date.now() });
+        setStatus("Apercu rapide pret. La carte est affichee sans generation de tuiles.");
         return;
       }
       setStatus(result.message);
@@ -409,6 +484,9 @@ export default function App() {
           ...layer,
           tilesPath: result.tilesPath,
           tileUrlTemplate: result.urlTemplate,
+          overlayImagePath: undefined,
+          overlayImageUrl: undefined,
+          overlayBounds: undefined,
           visible: true,
         }));
         setStatus("Tuiles locales generees. La carte est maintenant affichee en surcouche si la couche est visible.");
@@ -489,6 +567,38 @@ export default function App() {
     }
   }
 
+  function setPointLayers(nextPointLayers: PointLayer[]) {
+    updateProject((current) => ({ ...current, pointLayers: nextPointLayers }));
+    if (selectedPointLayerId && !nextPointLayers.some((pointLayer) => pointLayer.id === selectedPointLayerId)) {
+      setSelectedPointLayerId(nextPointLayers[0]?.id ?? null);
+    }
+  }
+
+  function updatePointLayer(pointLayerId: string, updater: (pointLayer: PointLayer) => PointLayer) {
+    updateProject((current) => ({
+      ...current,
+      pointLayers: (current.pointLayers ?? []).map((pointLayer) => (pointLayer.id === pointLayerId ? updater(pointLayer) : pointLayer)),
+    }));
+  }
+
+  function updatePointLayerProjection(pointLayerId: string, projection: CoordinateProjection) {
+    updatePointLayer(pointLayerId, (pointLayer) => ({
+      ...pointLayer,
+      sourceProjection: projection,
+      points: pointLayer.points.map((point) => ({
+        ...point,
+        sourceProjection: projection,
+        targetLatLng: roundedLatLng(point.source.x, point.source.y, projection),
+      })),
+    }));
+    setFocusPointLayerRequest({ pointLayerId, nonce: Date.now() });
+    setStatus(`Projection des points : ${projection}.`);
+  }
+
+  function pointLayerColumns(pointLayer: PointLayer) {
+    return pointLayer.columns ?? Object.keys(pointLayer.points[0]?.properties ?? {});
+  }
+
   return (
     <div className="app-shell" data-theme={theme}>
       <Toolbar
@@ -496,9 +606,14 @@ export default function App() {
         projectName={project.name}
         exportSelectionEnabled={exportSelectionEnabled}
         theme={theme}
+        importMode={importMode}
         baseMaps={BASE_MAPS}
         baseMapId={baseMap.id}
         baseMapOpacity={baseMapOpacity}
+        onImportModeChange={(nextImportMode) => {
+          setImportMode(nextImportMode);
+          setStatus(nextImportMode === "points" ? "Mode import points CSV." : "Mode import carte.");
+        }}
         onProjectNameChange={(name) => updateProject((current) => ({ ...current, name }))}
         onBaseMapChange={(nextBaseMapId) => {
           const nextBaseMap = getBaseMap(nextBaseMapId);
@@ -510,9 +625,11 @@ export default function App() {
           setStatus(`Opacite du fond : ${Math.round(opacity * 100)}%.`);
         }}
         onImport={importMap}
+        onImportPoints={importPointCsv}
         onSave={saveProject}
         onOpen={openProject}
         onGeoreference={georeferenceLayer}
+        onGenerateOverlay={generateOverlay}
         onGenerateTiles={generateTiles}
         onToggleExportSelection={() => {
           setExportSelectionEnabled((enabled) => {
@@ -546,18 +663,44 @@ export default function App() {
             </div>
           </div>
         ) : null}
-        <section className="source-pane" aria-label="Carte source">
-          <SourceImageView
-            layers={project.layers}
-            layer={selectedLayer}
-            selectedLayerId={selectedLayerId}
-            draftPoint={draftPoint.sourcePixel}
-            onSelectLayer={(layerId) => {
-              setSelectedLayerId(layerId);
-              setDraftPoint({});
-            }}
-            onPickSource={(sourcePixel) => addOrCompletePoint({ sourcePixel })}
-          />
+        <section className="source-pane" aria-label={importMode === "points" ? "Points CSV" : "Carte source"}>
+          {importMode === "points" ? (
+            <CsvPointView
+              pointLayers={pointLayers}
+              selectedPointLayerId={selectedPointLayerId}
+              onSelectPointLayer={(pointLayerId) => {
+                setSelectedPointLayerId(pointLayerId);
+                setFocusPointLayerRequest({ pointLayerId, nonce: Date.now() });
+              }}
+              onFocusPointLayer={(pointLayerId) => setFocusPointLayerRequest({ pointLayerId, nonce: Date.now() })}
+              onProjectionChange={updatePointLayerProjection}
+              onShowLabelsChange={(pointLayerId, showLabels) =>
+                updatePointLayer(pointLayerId, (pointLayer) => ({
+                  ...pointLayer,
+                  showLabels,
+                  labelColumn: pointLayer.labelColumn ?? pointLayerColumns(pointLayer)[0],
+                }))
+              }
+              onLabelColumnChange={(pointLayerId, labelColumn) =>
+                updatePointLayer(pointLayerId, (pointLayer) => ({
+                  ...pointLayer,
+                  labelColumn,
+                }))
+              }
+            />
+          ) : (
+            <SourceImageView
+              layers={project.layers}
+              layer={selectedLayer}
+              selectedLayerId={selectedLayerId}
+              draftPoint={draftPoint.sourcePixel}
+              onSelectLayer={(layerId) => {
+                setSelectedLayerId(layerId);
+                setDraftPoint({});
+              }}
+              onPickSource={(sourcePixel) => addOrCompletePoint({ sourcePixel })}
+            />
+          )}
         </section>
 
         <button
@@ -571,11 +714,13 @@ export default function App() {
         <section className="map-pane" aria-label="Fond de carte">
           <MapView
             layers={project.layers}
+            pointLayers={pointLayers}
             baseMap={baseMap}
             baseMapOpacity={baseMapOpacity}
             selectedLayerId={selectedLayerId}
             draftPoint={draftPoint.targetLatLng}
             focusLayerRequest={focusLayerRequest}
+            focusPointLayerRequest={focusPointLayerRequest}
             exportSelectionEnabled={exportSelectionEnabled}
             onPickTarget={(targetLatLng) => addOrCompletePoint({ targetLatLng })}
             onExportAreaChange={(area) => {
@@ -606,6 +751,14 @@ export default function App() {
             }}
             onLayersChange={setLayers}
             onFocusLayer={(layerId) => setFocusLayerRequest({ layerId, nonce: Date.now() })}
+          />
+          <PointLayerPanel
+            pointLayers={pointLayers}
+            onPointLayersChange={setPointLayers}
+            onFocusPointLayer={(pointLayerId) => {
+              setSelectedPointLayerId(pointLayerId);
+              setFocusPointLayerRequest({ pointLayerId, nonce: Date.now() });
+            }}
           />
           <ControlPointPanel
             layer={selectedLayer}

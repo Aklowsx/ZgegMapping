@@ -1,21 +1,39 @@
-import { FileDown, FolderOpen, Import, Layers, MapPinned, Moon, Save, Settings2, SquareDashedMousePointer, Sun } from "lucide-react";
+import {
+  FileDown,
+  FolderOpen,
+  Image as ImageIcon,
+  Import,
+  Layers,
+  MapPinned,
+  Moon,
+  Save,
+  Settings2,
+  SquareDashedMousePointer,
+  Sun,
+} from "lucide-react";
 import type { BaseMapConfig } from "../types/project";
+
+export type ImportMode = "map" | "points";
 
 type ToolbarProps = {
   busy: boolean;
   projectName: string;
   exportSelectionEnabled: boolean;
   theme: "day" | "night";
+  importMode: ImportMode;
   baseMaps: BaseMapConfig[];
   baseMapId: string;
   baseMapOpacity: number;
+  onImportModeChange(importMode: ImportMode): void;
   onProjectNameChange(name: string): void;
   onBaseMapChange(baseMapId: string): void;
   onBaseMapOpacityChange(opacity: number): void;
   onImport(): void;
+  onImportPoints(): void;
   onSave(): void;
   onOpen(): void;
   onGeoreference(): void;
+  onGenerateOverlay(): void;
   onGenerateTiles(): void;
   onToggleExportSelection(): void;
   onExportPdf(): void;
@@ -28,22 +46,35 @@ export function Toolbar({
   projectName,
   exportSelectionEnabled,
   theme,
+  importMode,
   baseMaps,
   baseMapId,
   baseMapOpacity,
+  onImportModeChange,
   onProjectNameChange,
   onBaseMapChange,
   onBaseMapOpacityChange,
   onImport,
+  onImportPoints,
   onSave,
   onOpen,
   onGeoreference,
+  onGenerateOverlay,
   onGenerateTiles,
   onToggleExportSelection,
   onExportPdf,
   onToggleTheme,
   onCheckDependencies,
 }: ToolbarProps) {
+  function runImport() {
+    if (importMode === "points") {
+      onImportPoints();
+      return;
+    }
+
+    onImport();
+  }
+
   return (
     <header className="toolbar">
       <div className="brand">
@@ -82,13 +113,28 @@ export function Toolbar({
       </label>
 
       <div className="toolbar-actions">
-        <button type="button" onClick={onImport} disabled={busy} title="Importer une carte">
-          <Import size={17} aria-hidden="true" />
-          Importer une carte
-        </button>
+        <div className="toolbar-import">
+          <select
+            value={importMode}
+            onChange={(event) => onImportModeChange(event.target.value === "points" ? "points" : "map")}
+            disabled={busy}
+            aria-label="Type d'import"
+          >
+            <option value="map">Carte</option>
+            <option value="points">Points CSV</option>
+          </select>
+          <button type="button" onClick={runImport} disabled={busy} title={importMode === "points" ? "Importer un CSV de points" : "Importer une carte"}>
+            <Import size={17} aria-hidden="true" />
+            Importer
+          </button>
+        </div>
         <button type="button" onClick={onGeoreference} disabled={busy} title="Georeferencer la carte">
           <MapPinned size={17} aria-hidden="true" />
           Georeferencer la carte
+        </button>
+        <button type="button" onClick={onGenerateOverlay} disabled={busy} title="Afficher rapidement sans generer les tuiles">
+          <ImageIcon size={17} aria-hidden="true" />
+          Apercu rapide
         </button>
         <button type="button" onClick={onGenerateTiles} disabled={busy} title="Generer les tuiles">
           <Layers size={17} aria-hidden="true" />

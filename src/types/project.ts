@@ -11,17 +11,57 @@ export type ControlPoint = {
   };
 };
 
+export type CoordinateProjection = "EPSG:4326" | "EPSG:3857" | "EPSG:2154";
+
+export type ImportedPoint = {
+  id: string;
+  name: string;
+  source: {
+    x: number;
+    y: number;
+  };
+  sourceProjection: CoordinateProjection;
+  targetLatLng: {
+    lat: number;
+    lng: number;
+  };
+  properties: Record<string, string>;
+};
+
+export type PointLayer = {
+  id: string;
+  name: string;
+  originalFilePath: string;
+  sourceProjection: CoordinateProjection;
+  visible: boolean;
+  color: string;
+  columns: string[];
+  showLabels: boolean;
+  labelColumn?: string;
+  points: ImportedPoint[];
+};
+
 export type MapLayer = {
   id: string;
   name: string;
   originalFilePath: string;
   convertedImagePath?: string;
   georefFilePath?: string;
+  overlayImagePath?: string;
+  overlayImageUrl?: string;
+  overlayBounds?: MapBounds;
   tilesPath?: string;
   tileUrlTemplate?: string;
   opacity: number;
   visible: boolean;
   controlPoints: ControlPoint[];
+};
+
+export type MapBounds = {
+  north: number;
+  south: number;
+  east: number;
+  west: number;
 };
 
 export type MapProject = {
@@ -30,6 +70,7 @@ export type MapProject = {
   createdAt: string;
   updatedAt: string;
   layers: MapLayer[];
+  pointLayers: PointLayer[];
 };
 
 export type BaseMapConfig = {
@@ -43,12 +84,7 @@ export type BaseMapConfig = {
 
 export type ExportMapArea = {
   mode: "selection" | "viewport";
-  bounds: {
-    north: number;
-    south: number;
-    east: number;
-    west: number;
-  };
+  bounds: MapBounds;
   center: {
     lat: number;
     lng: number;

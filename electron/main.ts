@@ -27,12 +27,48 @@ type PdfControlPoint = {
   };
 };
 
+type CoordinateProjection = "EPSG:4326" | "EPSG:3857" | "EPSG:2154";
+
+type ImportedPoint = {
+  id: string;
+  name: string;
+  source: {
+    x: number;
+    y: number;
+  };
+  sourceProjection: CoordinateProjection;
+  targetLatLng: {
+    lat: number;
+    lng: number;
+  };
+  properties: Record<string, string>;
+};
+
+type PdfPointLayer = {
+  id: string;
+  name: string;
+  sourceProjection: CoordinateProjection;
+  visible: boolean;
+  color: string;
+  showLabels: boolean;
+  labelColumn?: string;
+  points: ImportedPoint[];
+};
+
 type PdfLayer = {
   id: string;
   name: string;
   originalFilePath: string;
   convertedImagePath?: string;
   georefFilePath?: string;
+  overlayImagePath?: string;
+  overlayImageUrl?: string;
+  overlayBounds?: {
+    north: number;
+    south: number;
+    east: number;
+    west: number;
+  };
   tilesPath?: string;
   tileUrlTemplate?: string;
   opacity: number;
@@ -46,6 +82,12 @@ type PdfProject = {
   createdAt: string;
   updatedAt: string;
   layers: PdfLayer[];
+  pointLayers?: PdfPointLayer[];
+};
+
+type CsvRow = {
+  values: Record<string, string>;
+  properties: Record<string, string>;
 };
 
 type ExportMapArea = {
@@ -83,6 +125,7 @@ type ExportPdfPayload = {
 
 const imageExtensions = new Set([".jpg", ".jpeg", ".png", ".tif", ".tiff"]);
 const pdfExtensions = new Set([".pdf"]);
+const csvExtensions = new Set([".csv", ".txt"]);
 
 function appRoot() {
   return app.getAppPath();
@@ -106,9 +149,293 @@ function sanitizeFileName(name: string) {
 
 async function ensureProjectDirs(projectName: string) {
   const root = path.join(projectsRoot(), sanitizeProjectName(projectName));
-  const dirs = ["originals", "converted", "georeferenced", "tiles", "logs", "control_points", "exports"];
+  const dirs = ["originals", "points", "converted", "georeferenced", "overlays", "tiles", "logs", "control_points", "exports"];
   await Promise.all(dirs.map((dir) => fs.mkdir(path.join(root, dir), { recursive: true })));
   return root;
+}
+
+function normalizeHeader(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+function parseNumber(value: string | undefined) {
+  if (!value) {
+    return null;
+  }
+
+  const normalized = value.trim().replace(/\s/g, "").replace(",", ".");
+  if (!normalized) {
+    return null;
+  }
+
+  const number = Number(normalized);
+  return Number.isFinite(number) ? number : null;
+}
+
+function splitCsvLine(line: string, delimiter: string) {
+  const values: string[] = [];
+  let current = "";
+  let quoted = false;
+
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    const nextChar = line[index + 1];
+
+    if (char === '"' && quoted && nextChar === '"') {
+      current += '"';
+      index += 1;
+      continue;
+    }
+
+    if (char === '"') {
+      quoted = !quoted;
+      continue;
+    }
+
+    if (char === delimiter && !quoted) {
+      values.push(current.trim());
+      current = "";
+      continue;
+    }
+
+    current += char;
+  }
+
+  values.push(current.trim());
+  return values;
+}
+
+function detectDelimiter(firstLine: string) {
+  const candidates = [",", ";", "\t"];
+  return candidates
+    .map((delimiter) => ({ delimiter, count: splitCsvLine(firstLine, delimiter).length }))
+    .sort((a, b) => b.count - a.count)[0]?.delimiter ?? ",";
+}
+
+function parseCsv(content: string): CsvRow[] {
+  const lines = content
+    .replace(/^\uFEFF/, "")
+    .split(/\r?\n/)
+    .filter((line) => line.trim().length > 0);
+
+  if (lines.length < 2) {
+    return [];
+  }
+
+  const delimiter = detectDelimiter(lines[0]);
+  const headers = splitCsvLine(lines[0], delimiter);
+  const normalizedHeaders = headers.map(normalizeHeader);
+
+  return lines.slice(1).map((line) => {
+    const values = splitCsvLine(line, delimiter);
+    const row: CsvRow = { values: {}, properties: {} };
+    normalizedHeaders.forEach((header, index) => {
+      const originalHeader = headers[index]?.trim() || header;
+      const value = values[index] ?? "";
+      if (header) {
+        row.values[header] = value;
+      }
+      if (originalHeader) {
+        row.properties[originalHeader] = value;
+      }
+    });
+    return row;
+  });
+}
+
+function pickValue(row: CsvRow, names: string[]) {
+  for (const name of names.map(normalizeHeader)) {
+    if (row.values[name] !== undefined && row.values[name] !== "") {
+      return row.values[name];
+    }
+  }
+  return undefined;
+}
+
+function parseCoordinateText(value: string | undefined) {
+  if (!value) {
+    return null;
+  }
+
+  const isWktPoint = /point\s*\(/i.test(value);
+  const matches = value.match(/-?\d+(?:[.,]\d+)?/g);
+  if (!matches || matches.length < 2) {
+    return null;
+  }
+
+  const first = parseNumber(matches[0]);
+  const second = parseNumber(matches[1]);
+  if (first === null || second === null) {
+    return null;
+  }
+
+  if (isWktPoint) {
+    return { x: first, y: second };
+  }
+
+  if (Math.abs(first) <= 90 && Math.abs(second) <= 180) {
+    return { x: second, y: first };
+  }
+
+  return { x: first, y: second };
+}
+
+function normalizeProjection(value: string | undefined): CoordinateProjection | null {
+  if (!value) {
+    return null;
+  }
+
+  const normalized = normalizeHeader(value);
+  if (["4326", "epsg4326", "wgs84", "latlon", "latlng"].includes(normalized)) {
+    return "EPSG:4326";
+  }
+  if (["3857", "epsg3857", "webmercator", "mercator", "pseudoMercator".toLowerCase()].includes(normalized)) {
+    return "EPSG:3857";
+  }
+  if (["2154", "epsg2154", "lambert93", "lambertzone93", "l93"].includes(normalized)) {
+    return "EPSG:2154";
+  }
+  return null;
+}
+
+function detectProjection(x: number, y: number, explicitProjection: CoordinateProjection | null): CoordinateProjection {
+  if (explicitProjection) {
+    return explicitProjection;
+  }
+  if (Math.abs(x) <= 180 && Math.abs(y) <= 90) {
+    return "EPSG:4326";
+  }
+  if (x >= 0 && x <= 1300000 && y >= 6000000 && y <= 7200000) {
+    return "EPSG:2154";
+  }
+  return "EPSG:3857";
+}
+
+function webMercatorToWgs84(x: number, y: number) {
+  const lng = (x / 20037508.342789244) * 180;
+  const mercatorLat = (y / 20037508.342789244) * 180;
+  const lat = (180 / Math.PI) * (2 * Math.atan(Math.exp((mercatorLat * Math.PI) / 180)) - Math.PI / 2);
+  return { lat, lng };
+}
+
+function lambert93ToWgs84(x: number, y: number) {
+  const a = 6378137;
+  const e = Math.sqrt(0.0066943800229);
+  const lat0 = (46.5 * Math.PI) / 180;
+  const lon0 = (3 * Math.PI) / 180;
+  const lat1 = (44 * Math.PI) / 180;
+  const lat2 = (49 * Math.PI) / 180;
+  const falseEasting = 700000;
+  const falseNorthing = 6600000;
+
+  function m(lat: number) {
+    const sinLat = Math.sin(lat);
+    return Math.cos(lat) / Math.sqrt(1 - e * e * sinLat * sinLat);
+  }
+
+  function t(lat: number) {
+    const sinLat = Math.sin(lat);
+    return Math.tan(Math.PI / 4 - lat / 2) / Math.pow((1 - e * sinLat) / (1 + e * sinLat), e / 2);
+  }
+
+  const n = (Math.log(m(lat1)) - Math.log(m(lat2))) / (Math.log(t(lat1)) - Math.log(t(lat2)));
+  const f = m(lat1) / (n * Math.pow(t(lat1), n));
+  const rho0 = a * f * Math.pow(t(lat0), n);
+  const dx = x - falseEasting;
+  const dy = rho0 - (y - falseNorthing);
+  const rho = Math.sign(n) * Math.sqrt(dx * dx + dy * dy);
+  const theta = Math.atan2(dx, dy);
+  const lng = lon0 + theta / n;
+  const targetT = Math.pow(rho / (a * f), 1 / n);
+
+  let lat = Math.PI / 2 - 2 * Math.atan(targetT);
+  for (let index = 0; index < 8; index += 1) {
+    const sinLat = Math.sin(lat);
+    lat = Math.PI / 2 - 2 * Math.atan(targetT * Math.pow((1 - e * sinLat) / (1 + e * sinLat), e / 2));
+  }
+
+  return {
+    lat: (lat * 180) / Math.PI,
+    lng: (lng * 180) / Math.PI,
+  };
+}
+
+function convertToWgs84(x: number, y: number, projection: CoordinateProjection) {
+  if (projection === "EPSG:4326") {
+    return { lat: y, lng: x };
+  }
+  if (projection === "EPSG:2154") {
+    return lambert93ToWgs84(x, y);
+  }
+  return webMercatorToWgs84(x, y);
+}
+
+function rowProperties(row: CsvRow) {
+  return row.properties;
+}
+
+function parsePointRows(rows: CsvRow[]): { points: ImportedPoint[]; projection: CoordinateProjection; skippedRows: number; columns: string[]; labelColumn?: string } {
+  const points: ImportedPoint[] = [];
+  let skippedRows = 0;
+  let firstProjection: CoordinateProjection | null = null;
+  const columns = rows[0] ? Object.keys(rows[0].properties) : [];
+
+  rows.forEach((row, index) => {
+    const explicitProjection = normalizeProjection(pickValue(row, ["projection", "epsg", "srid", "srs", "crs"]));
+    const coordinateText = parseCoordinateText(pickValue(row, ["geo_point_2d", "geopoint", "coordinates", "coordonnees", "geom", "geometry", "wkt"]));
+    const latValue = parseNumber(pickValue(row, ["lat", "latitude", "y_wgs84"]));
+    const lngValue = parseNumber(pickValue(row, ["lng", "lon", "long", "longitude", "x_wgs84"]));
+    const rawX = parseNumber(pickValue(row, ["x", "easting", "est", "x_l93", "x_lambert", "coordx", "coordonneex"]));
+    const rawY = parseNumber(pickValue(row, ["y", "northing", "nord", "y_l93", "y_lambert", "coordy", "coordonney"]));
+
+    const hasLatLng = lngValue !== null && latValue !== null;
+    const x = hasLatLng ? lngValue : coordinateText?.x ?? rawX;
+    const y = hasLatLng ? latValue : coordinateText?.y ?? rawY;
+
+    if (x === null || y === null) {
+      skippedRows += 1;
+      return;
+    }
+
+    const sourceProjection = hasLatLng || coordinateText ? (explicitProjection ?? "EPSG:4326") : detectProjection(x, y, explicitProjection);
+    const targetLatLng = convertToWgs84(x, y, sourceProjection);
+    if (
+      !Number.isFinite(targetLatLng.lat) ||
+      !Number.isFinite(targetLatLng.lng) ||
+      Math.abs(targetLatLng.lat) > 90 ||
+      Math.abs(targetLatLng.lng) > 180
+    ) {
+      skippedRows += 1;
+      return;
+    }
+
+    firstProjection ??= sourceProjection;
+    const name = pickValue(row, ["name", "nom", "label", "libelle", "id", "numero"]) || `Point ${points.length + 1}`;
+    points.push({
+      id: `csv-point-${Date.now()}-${index}`,
+      name,
+      source: { x, y },
+      sourceProjection,
+      targetLatLng: {
+        lat: Number(targetLatLng.lat.toFixed(7)),
+        lng: Number(targetLatLng.lng.toFixed(7)),
+      },
+      properties: rowProperties(row),
+    });
+  });
+
+  return {
+    points,
+    projection: firstProjection ?? "EPSG:4326",
+    skippedRows,
+    columns,
+    labelColumn: columns.find((column) => ["nom", "name", "label", "libelle", "id", "numero"].includes(normalizeHeader(column))),
+  };
 }
 
 function escapeHtml(value: unknown) {
@@ -221,12 +548,35 @@ function renderMapHtml(payload: ExportPdfPayload, width: number, height: number)
   };
   const baseMapOpacity = Math.min(1, Math.max(0.15, Number(payload.baseMapOpacity ?? 1)));
   const visibleLayers = payload.project.layers
-    .filter((layer) => layer.visible && layer.tileUrlTemplate)
+    .filter((layer) => layer.visible && !(layer.overlayImageUrl && layer.overlayBounds) && layer.tileUrlTemplate)
     .map((layer, index) => ({
       name: layer.name,
       opacity: layer.opacity,
       tileUrlTemplate: layer.tileUrlTemplate,
       zIndex: 200 + index,
+    }));
+  const visibleImageLayers = payload.project.layers
+    .filter((layer) => layer.visible && layer.overlayImageUrl && layer.overlayBounds)
+    .map((layer, index) => ({
+      name: layer.name,
+      opacity: layer.opacity,
+      imageUrl: layer.overlayImageUrl,
+      bounds: layer.overlayBounds,
+      zIndex: 200 + index,
+    }));
+  const visiblePointLayers = (payload.project.pointLayers ?? [])
+    .filter((pointLayer) => pointLayer.visible)
+    .map((pointLayer) => ({
+      name: pointLayer.name,
+      color: pointLayer.color,
+      showLabels: pointLayer.showLabels,
+      points: pointLayer.points.map((point) => ({
+        name: point.name,
+        label: pointLayer.labelColumn ? point.properties[pointLayer.labelColumn] : point.name,
+        lat: point.targetLatLng.lat,
+        lng: point.targetLatLng.lng,
+        sourceProjection: point.sourceProjection,
+      })),
     }));
 
   return `<!doctype html>
@@ -252,6 +602,15 @@ function renderMapHtml(payload: ExportPdfPayload, width: number, height: number)
       .basemap-dark-yellow {
         filter: sepia(1) saturate(5.2) hue-rotate(4deg) brightness(1.18) contrast(1.08);
       }
+
+      .point-label {
+        border: 1px solid rgba(15, 23, 42, 0.18);
+        border-radius: 4px;
+        background: rgba(255, 255, 255, 0.92);
+        color: #17202a;
+        font-size: 11px;
+        font-weight: 700;
+      }
     </style>
   </head>
   <body>
@@ -260,6 +619,8 @@ function renderMapHtml(payload: ExportPdfPayload, width: number, height: number)
     <script>
       const exportBounds = ${JSON.stringify(bounds)};
       const overlayLayers = ${JSON.stringify(visibleLayers)};
+      const imageLayers = ${JSON.stringify(visibleImageLayers)};
+      const pointLayers = ${JSON.stringify(visiblePointLayers)};
       const bounds = L.latLngBounds(
         [exportBounds.south, exportBounds.west],
         [exportBounds.north, exportBounds.east]
@@ -308,6 +669,39 @@ function renderMapHtml(payload: ExportPdfPayload, width: number, height: number)
           zIndex: overlay.zIndex
         }).addTo(map);
         layers.push(layer);
+      });
+
+      imageLayers.forEach((overlay) => {
+        const overlayBounds = L.latLngBounds(
+          [overlay.bounds.south, overlay.bounds.west],
+          [overlay.bounds.north, overlay.bounds.east]
+        );
+        const layer = L.imageOverlay(overlay.imageUrl, overlayBounds, {
+          opacity: overlay.opacity,
+          zIndex: overlay.zIndex,
+          crossOrigin: true
+        }).addTo(map);
+        layers.push(layer);
+      });
+
+      pointLayers.forEach((pointLayer) => {
+        pointLayer.points.forEach((point) => {
+          const marker = L.circleMarker([point.lat, point.lng], {
+            radius: 6,
+            color: pointLayer.color,
+            weight: 2,
+            fillColor: "#ffffff",
+            fillOpacity: 0.96
+          }).addTo(map);
+          if (pointLayer.showLabels && point.label) {
+            marker.bindTooltip(point.label, {
+              permanent: true,
+              direction: "right",
+              offset: [8, 0],
+              className: "point-label"
+            });
+          }
+        });
       });
 
       map.fitBounds(bounds, { animate: false, padding: [0, 0] });
@@ -601,6 +995,61 @@ ipcMain.handle("project:import-map", async (_event, projectName: string): Promis
   };
 });
 
+ipcMain.handle("points:import-csv", async (_event, projectName: string): Promise<JsonResult> => {
+  const { canceled, filePaths } = await dialog.showOpenDialog({
+    title: "Importer un CSV de points",
+    properties: ["openFile"],
+    filters: [{ name: "CSV de points", extensions: ["csv", "txt"] }],
+  });
+
+  if (canceled || filePaths.length === 0) {
+    return { success: false, message: "Import CSV annule." };
+  }
+
+  const sourcePath = filePaths[0];
+  const extension = path.extname(sourcePath).toLowerCase();
+  if (!csvExtensions.has(extension)) {
+    return { success: false, message: "Format CSV non pris en charge." };
+  }
+
+  const projectDir = await ensureProjectDirs(projectName);
+  const pointLayerId = `points-${Date.now()}`;
+  const originalName = `${pointLayerId}-${sanitizeFileName(path.basename(sourcePath))}`;
+  const originalPath = path.join(projectDir, "points", originalName);
+  await fs.copyFile(sourcePath, originalPath);
+
+  const content = await fs.readFile(originalPath, "utf-8");
+  const rows = parseCsv(content);
+  const parsed = parsePointRows(rows);
+  if (parsed.points.length === 0) {
+    return {
+      success: false,
+      message: "Aucun point valide trouve. Colonnes acceptees : lat/lng ou x/y avec projection optionnelle EPSG:4326, EPSG:3857 ou EPSG:2154.",
+      originalFilePath: originalPath,
+      skippedRows: parsed.skippedRows,
+    };
+  }
+
+  return {
+    success: true,
+    message: `${parsed.points.length} point(s) importes en ${parsed.projection}.`,
+    originalFilePath: originalPath,
+    skippedRows: parsed.skippedRows,
+    pointLayer: {
+      id: pointLayerId,
+      name: path.basename(sourcePath, extension),
+      originalFilePath: originalPath,
+      sourceProjection: parsed.projection,
+      visible: true,
+      color: "#14b8a6",
+      columns: parsed.columns,
+      showLabels: false,
+      labelColumn: parsed.labelColumn,
+      points: parsed.points,
+    },
+  };
+});
+
 ipcMain.handle("project:save", async (_event, project: { name?: string }): Promise<JsonResult> => {
   const projectName = sanitizeProjectName(project.name ?? "default-project");
   const projectDir = await ensureProjectDirs(projectName);
@@ -665,6 +1114,26 @@ ipcMain.handle(
       payload.layer.georefFilePath,
       "--output",
       tilesDir,
+      "--logs",
+      path.join(projectDir, "logs"),
+    ]);
+  },
+);
+
+ipcMain.handle(
+  "layer:generate-overlay",
+  async (_event, payload: { projectName: string; layer: { id: string; georefFilePath?: string } }): Promise<JsonResult> => {
+    if (!payload.layer.georefFilePath) {
+      return { success: false, message: "Aucun GeoTIFF disponible pour cette couche." };
+    }
+
+    const projectDir = await ensureProjectDirs(payload.projectName);
+    const overlayPath = path.join(projectDir, "overlays", `${payload.layer.id}.jpg`);
+    return runPython("generate_overlay.py", [
+      "--source",
+      payload.layer.georefFilePath,
+      "--output",
+      overlayPath,
       "--logs",
       path.join(projectDir, "logs"),
     ]);
